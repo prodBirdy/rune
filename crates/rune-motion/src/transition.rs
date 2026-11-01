@@ -69,6 +69,16 @@ pub struct Effect {
     /// ([`Transition::allow_small_scale`]).
     #[cfg_attr(feature = "serde", serde(default))]
     pub small_scale: bool,
+    /// How much of the node's own shape is drawn when absent (identity 1): its strokes trace on
+    /// along their length in order, and each fill fades in as the drawing reaches it
+    /// ([`Transition::draw`]). Under Reduce Motion it is drawn whole.
+    #[cfg_attr(feature = "serde", serde(default = "drawn_whole"))]
+    pub draw: f32,
+}
+
+#[cfg(feature = "serde")]
+fn drawn_whole() -> f32 {
+    1.0
 }
 
 /// The smallest scale a transition with [`Transition::allow_small_scale`] starts or ends at.
@@ -91,6 +101,7 @@ impl Effect {
         blur: 0.0,
         reveal: None,
         small_scale: false,
+        draw: 1.0,
     };
 
     pub fn opacity(opacity: f32) -> Effect {
@@ -117,6 +128,7 @@ impl Effect {
             blur: self.blur.max(o.blur),
             reveal: self.reveal.or(o.reveal),
             small_scale: self.small_scale || o.small_scale,
+            draw: self.draw * o.draw,
         }
     }
 
@@ -132,6 +144,7 @@ impl Effect {
         self.scale = self.scale.clamp(floor, 1.1);
         self.blur = if self.travels() { 0.0 } else { self.blur.clamp(0.0, 4.0) };
         self.opacity = self.opacity.clamp(0.0, 1.0);
+        self.draw = self.draw.clamp(0.0, 1.0);
         if removal {
             self.opacity = 0.0;
         }
@@ -215,6 +228,13 @@ impl Transition {
     /// Gaussian blur (sigma in points) and fade only.
     pub fn blur(sigma: f32) -> Transition {
         Transition::symmetric(Effect { opacity: 0.0, blur: sigma, ..Effect::IDENTITY })
+    }
+    /// A shape that draws itself on, as a connector draws from its source to its target: its
+    /// strokes trace from their first point to their last, one after another, and each fill (an
+    /// arrowhead) fades in as the line reaches it. Applies to the node's own shape (`canvas`)
+    /// only; children enter by their own transitions.
+    pub fn draw() -> Transition {
+        Transition::symmetric(Effect { draw: 0.0, ..Effect::IDENTITY })
     }
     /// A soft-edged wipe from `edge` (mask reveal), 24 pt feather.
     pub fn reveal(edge: Edge) -> Transition {

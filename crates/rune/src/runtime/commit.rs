@@ -39,6 +39,8 @@ pub(super) struct Measurement<'a, S: 'static> {
     pub(super) state_unchanged: bool,
     /// Whether this pass measures again because estimates left part of a viewport blank.
     pub(super) retry: bool,
+    /// This commit is a live-only check's: virtual lists keep the rows they mount now.
+    pub(super) hold_windows: bool,
     pub(super) caret: Option<(String, [f32; 4])>,
     pub(super) caret_read: bool,
     pub(super) layout_seen: layout_read::LayoutRects,
@@ -77,6 +79,7 @@ impl<S: 'static> Runtime<S> {
                 scroll.pinned = true;
             }
         }
+        self.note_drawn_rows();
         let mut measured = self.measure_commit(tx);
         self.focus_before_commit = self.focused.clone();
         // Settle layout reads first so a field that mounts once a rect is known is in `nodes`.

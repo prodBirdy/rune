@@ -64,7 +64,7 @@ pub use case::TextCase;
 pub use hash::text_hash;
 pub(crate) use hash::shape_key;
 pub(crate) use families::choose_families;
-pub use measure::{FamiliesGuard, TextInk, advance, font_epoch, ink, measure, with_families};
+pub use measure::{FamiliesGuard, TextInk, advance, font_epoch, ink, measure, measure_with, with_families};
 pub use rich_layout::RichLayoutOptions;
 pub use run::{Run, RunLayout};
 pub(crate) use case::Source as CaseSource;
@@ -175,8 +175,8 @@ pub struct TextSystem {
     /// CoreGraphics' glyph pipeline for `smoothing`, and its per-ink state.
     apple: macos::smoothing::Smoothing,
     pub(crate) glyph_cache: glyph_cache::GlyphCache,
-    /// Device px the next glyphs move down ([`Self::set_glide`]).
-    glide: f32,
+    /// Device px `[x, y]` the next glyphs glide from their resting pixel ([`Self::set_glide`]).
+    glide: [f32; 2],
 }
 
 impl Default for TextSystem {
@@ -296,7 +296,7 @@ impl TextSystem {
             primary_axes: HashMap::new(),
             apple: Default::default(),
             glyph_cache: Default::default(),
-            glide: 0.0,
+            glide: [0.0; 2],
         }
     }
 
@@ -838,8 +838,8 @@ impl TextSystem {
             },
         };
         entry.map(|a| GlyphQuad {
-            rect: [origin[0].round(), origin[1].round(), a.w as f32, a.h as f32],
-            uv: [a.x as f32, (a.page as u32 * ATLAS_SIZE + a.y) as f32],
+            rect: [origin[0], origin[1], px as f32, px as f32],
+            uv: [(a.x + 1) as f32, (a.page as u32 * ATLAS_SIZE + a.y + 1) as f32],
             ink: 0,
             byte: 0,
             color: 0,

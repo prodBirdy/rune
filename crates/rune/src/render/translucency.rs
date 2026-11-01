@@ -23,6 +23,7 @@ pub(crate) fn mode(surface: &wgpu::Surface<'_>, adapter: &wgpu::Adapter) -> Opti
 pub(crate) fn serves(gpu: &crate::render::Gpu, surface: &wgpu::Surface<'_>, wanted: wgpu::Features, translucent: bool) -> bool {
     gpu.adapter.is_surface_supported(surface)
         && gpu.device.features().contains(wanted & gpu.adapter.features())
+        && crate::gpu::backend::serves(&gpu.device, wanted)
         && (!translucent || mode(surface, &gpu.adapter).is_some())
 }
 

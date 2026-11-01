@@ -6,6 +6,7 @@ use crate::pixels::ImageAtlas;
 use crate::text::{ATLAS_SIZE, Atlas};
 
 mod backdrop_blur;
+mod first_use;
 pub(crate) mod layer_blur;
 mod layers;
 mod metallib;
@@ -15,6 +16,7 @@ pub(crate) mod surface_alpha;
 pub(crate) mod translucency;
 mod upload;
 pub use backdrop_blur::MAX_BACKDROP_BLURS;
+pub use first_use::precompiled_misses;
 pub use layers::LayerStats;
 
 pub const KIND_RECT: f32 = 0.0;
@@ -482,9 +484,15 @@ impl Gpu {
     /// 40 ms on a Mac's first launch after an install or update). Indirect draws a compositor
     /// records on Rune's device still work; wgpu just doesn't check their argument buffers.
     pub fn instance() -> wgpu::Instance {
-        #[cfg(all(target_os = "macos", feature = "metal-backend"))]
+        #[cfg(all(target_vendor = "apple", feature = "metal-backend"))]
         if crate::gpu::metal::enabled() { return crate::gpu::metal::instance(); }
         Self::wgpu_instance()
+    }
+
+    /// `instance`, or wgpu's when the native Metal backend is only the default and lacks one of
+    /// the features a compositor wants (`Compositor::features`).
+    pub(crate) fn instance_for(wanted: wgpu::Features) -> wgpu::Instance {
+        if crate::gpu::backend::wgpu_for(wanted) { Self::wgpu_instance() } else { Self::instance() }
     }
 
     /// wgpu's own backends, whatever `RUNE_GPU_BACKEND` says: DX12 alone on Windows: it's the backend that composites transparent surfaces, and a
@@ -540,8 +548,9 @@ impl Gpu {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn for_surface_from<'w>(early: Option<(Gpu, Renderer)>, wanted: wgpu::Features, translucent: bool,
         surface: impl FnOnce(&wgpu::Instance) -> Result<wgpu::Surface<'w>, String>) -> Result<(Gpu, wgpu::Surface<'w>, Option<Renderer>), String> {
-        let Some((early, renderer)) = early else {
-            let instance = Self::instance();
+        // A prewarmed native Metal GPU lacking a wanted feature is dropped before it makes a surface.
+        let Some((early, renderer)) = early.filter(|(gpu, _)| crate::gpu::backend::serves(&gpu.device, wanted)) else {
+            let instance = Self::instance_for(wanted);
             let surface = surface(&instance)?;
             return Ok((Self::try_for(instance, Some(&surface), wanted, translucent)?, surface, None));
         };
@@ -565,15 +574,19 @@ impl Gpu {
 /// presents to any window; elsewhere the window's surface decides the adapter, and this does
 /// nothing.
 ///
-/// An app that draws with `GpuBackend::Metal` should call `prewarm_gpu_on` instead, so the thread
-/// starts on that backend rather than on wgpu's and starting over.
+/// It starts on the backend the app draws with when nothing chose one: Rune's native Metal
+/// backend with the `metal-backend` feature (on by default), wgpu without it. An app that opts
+/// out with `GpuBackend::Wgpu` should call `prewarm_gpu_on(GpuBackend::Wgpu)` instead, so the
+/// thread starts on wgpu rather than on the native backend and starting over.
 pub fn prewarm_gpu() {
     prewarm::start();
 }
 
-/// Chooses `backend` (as `App::gpu_backend` does), then starts `prewarm_gpu`'s thread on it, so a
-/// Metal app's prewarm never starts on wgpu and restarts. `App::gpu_backend` with the same backend
-/// afterwards changes nothing. Elsewhere, or without `metal-backend`, it is `prewarm_gpu`.
+/// Chooses `backend` (as `App::gpu_backend` does), then starts `prewarm_gpu`'s thread on it, so an
+/// app that picks a backend other than the default never prewarms on the default and restarts.
+/// `App::gpu_backend` with the same backend afterwards changes nothing. On iOS it only chooses: call
+/// it before the first `embed::LayerHost` (and `embed::prewarm`). Elsewhere, or without
+/// `metal-backend`, it is `prewarm_gpu`.
 pub fn prewarm_gpu_on(backend: crate::GpuBackend) {
     choose_then_start(backend, crate::gpu::backend::choose, prewarm::start);
 }
@@ -1290,5 +1303,29 @@ mod prewarm_tests {
         let renderer = Renderer::new(&early.device, wgpu::TextureFormat::Bgra8UnormSrgb);
         let (_, _surface, kept) = Gpu::for_surface_from(Some((early, renderer)), wgpu::Features::empty(), false, |i| surface(i, &layer)).expect("a GPU");
         assert!(kept.is_some(), "a suitable prewarmed device keeps its renderer");
+    }
+
+    /// A compositor wanting a feature the native Metal backend lacks gets wgpu's device, when
+    /// Metal is only the default, with the prewarmed native GPU dropped before any surface.
+    #[cfg(feature = "metal-backend")]
+    #[test]
+    fn a_compositor_wanting_what_the_native_backend_lacks_draws_with_wgpu() {
+        if !crate::gpu::metal::enabled() || std::env::var_os("RUNE_GPU_BACKEND").is_some() {
+            return eprintln!("skipped: the native backend isn't the default here");
+        }
+        let early = Gpu::headless();
+        assert!(crate::gpu::metal::raw_device(&early.device).is_some());
+        let renderer = Renderer::new(&early.device, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let layer = layer();
+        let mut made = 0;
+        let wanted = wgpu::Features::IMMEDIATES;
+        let (gpu, _surface, renderer) = Gpu::for_surface_from(Some((early, renderer)), wanted, false, |i| { made += 1; surface(i, &layer) })
+            .expect("a wgpu GPU");
+        assert_eq!(made, 1);
+        assert!(renderer.is_none());
+        assert!(crate::gpu::metal::raw_device(&gpu.device).is_none(), "wgpu's device");
+        assert!(gpu.device.features().contains(wanted));
+        assert!(!crate::gpu::backend::serves(&Gpu::headless().device, wanted));
+        assert!(crate::gpu::backend::serves(&Gpu::headless().device, wgpu::Features::TIMESTAMP_QUERY));
     }
 }

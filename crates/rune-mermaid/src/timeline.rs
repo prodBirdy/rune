@@ -177,7 +177,7 @@ fn draw_down(t: &Timeline, paint: &DiagramStyle) -> Option<Scene> {
         }
         y = row_bottom + 10.0;
     }
-    c.finish(1.0)
+    c.finish(1.0, paint)
 }
 
 #[cfg(test)]

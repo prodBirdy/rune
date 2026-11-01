@@ -47,5 +47,9 @@ rune-theme-opencode = { path = "../../themes/opencode" }
 name = "markdown_fixture"
 required-features = ["markdown", "mermaid"]
 
+[[test]]
+name = "markdown_diagram_stream"
+required-features = ["markdown", "mermaid"]
+
 [lints]
 workspace = true

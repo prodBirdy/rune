@@ -12,6 +12,7 @@ use parking_lot::Mutex;
 use wgpu::custom::*;
 use wgpu::naga;
 
+use super::derive::{self, Use};
 use super::encode::Rec;
 use super::layout::{COMPUTE, GroupRaw, LayoutRaw, PipelineLayout};
 use super::shader::{Stage, compile};
@@ -38,8 +39,10 @@ send_sync!(ComputeRaw);
 
 pub(super) fn create(shared: &Shared, desc: &wgpu::ComputePipelineDescriptor<'_>) -> ComputePipeline {
     let label = desc.label.unwrap_or("compute pipeline");
-    let layout = desc.layout.expect("RUNE_GPU_BACKEND=metal: pipelines need an explicit layout")
-        .as_custom::<PipelineLayout>().expect("a Metal pipeline layout").raw.clone();
+    let layout = match desc.layout {
+        Some(layout) => layout.as_custom::<PipelineLayout>().expect("a Metal pipeline layout").raw.clone(),
+        None => derive::layout(label, &[Use { module: desc.module, entry: desc.entry_point, kind: naga::ShaderStage::Compute }]).raw,
+    };
     let stage = Stage { module: desc.module, entry: desc.entry_point, constants: desc.compilation_options.constants,
         kind: naga::ShaderStage::Compute };
     let cs = compile(shared, &stage, &layout.stages[COMPUTE], false).unwrap_or_else(|e| panic!("{label}: {e}"));
@@ -49,8 +52,8 @@ pub(super) fn create(shared: &Shared, desc: &wgpu::ComputePipelineDescriptor<'_>
 }
 
 impl ComputePipelineInterface for ComputePipeline {
-    fn get_bind_group_layout(&self, _: u32) -> DispatchBindGroupLayout {
-        unimplemented!("RUNE_GPU_BACKEND=metal: layouts derived from a pipeline")
+    fn get_bind_group_layout(&self, index: u32) -> DispatchBindGroupLayout {
+        self.raw.layout.group(index)
     }
 }
 
@@ -174,7 +177,7 @@ impl ComputePassInterface for MetalComputePass {
     }
     fn set_bind_group(&mut self, index: u32, group: Option<&DispatchBindGroup>, offsets: &[wgpu::DynamicOffset]) {
         let index = index as usize;
-        assert!(index < GROUPS, "RUNE_GPU_BACKEND=metal: bind group {index}");
+        if index >= GROUPS { super::unsupported!("bind group {index}") }
         let Some(group) = group else { self.groups[index] = None; return };
         let group = &group.as_custom::<super::layout::BindGroup>().expect("a Metal bind group").raw;
         if let Some((bound, bound_offsets)) = &self.groups[index]
@@ -192,9 +195,9 @@ impl ComputePassInterface for MetalComputePass {
     fn insert_debug_marker(&mut self, _: &str) {}
     fn push_debug_group(&mut self, _: &str) {}
     fn pop_debug_group(&mut self) {}
-    fn write_timestamp(&mut self, _: &DispatchQuerySet, _: u32) { unimplemented!("RUNE_GPU_BACKEND=metal: timestamps inside passes") }
-    fn begin_pipeline_statistics_query(&mut self, _: &DispatchQuerySet, _: u32) { unimplemented!("RUNE_GPU_BACKEND=metal: query sets") }
-    fn end_pipeline_statistics_query(&mut self) { unimplemented!("RUNE_GPU_BACKEND=metal: query sets") }
+    fn write_timestamp(&mut self, _: &DispatchQuerySet, _: u32) { super::unsupported!("timestamps inside passes") }
+    fn begin_pipeline_statistics_query(&mut self, _: &DispatchQuerySet, _: u32) { super::unsupported!("query sets") }
+    fn end_pipeline_statistics_query(&mut self) { super::unsupported!("query sets") }
     fn dispatch_workgroups(&mut self, x: u32, y: u32, z: u32) {
         if x == 0 || y == 0 || z == 0 { return }
         self.flush();
@@ -203,7 +206,7 @@ impl ComputePassInterface for MetalComputePass {
         self.raw.dispatchThreadgroups_threadsPerThreadgroup(groups, pipeline.workgroup);
     }
     fn dispatch_workgroups_indirect(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress) {
-        unimplemented!("RUNE_GPU_BACKEND=metal: indirect dispatches")
+        super::unsupported!("indirect dispatches")
     }
     fn transition_resources<'a>(&mut self, _: &mut dyn Iterator<Item = wgpu::wgt::BufferTransition<&'a DispatchBuffer>>,
         _: &mut dyn Iterator<Item = wgpu::wgt::TextureTransition<&'a DispatchTextureView>>) {}

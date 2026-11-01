@@ -137,7 +137,7 @@ pub(crate) fn parse(header: &str, body: &[&str]) -> Option<C4> {
             Way::Back => (a, b, Head::Arrow, other),
         };
         let label = Some(label).filter(|l| !l.trim().is_empty());
-        d.edges.push(Edge { from, to, label, line: Line::Solid, start, end, minlen: 1, style: EdgeStyle::default() });
+        d.edges.push(Edge { from, to, label, line: Line::Solid, start, end, minlen: 1, style: EdgeStyle::default(), on_cluster: [None; 2] });
     }
     (!d.elements.is_empty()).then_some(d)
 }
@@ -265,7 +265,7 @@ pub(crate) fn draw(d: &C4, paint: &DiagramStyle, hover: Option<(Hover, Color)>) 
             let person = e.base == Base::Person;
             let mut h = lines.iter().map(|l| l.0.size[1] + 3.0).sum::<f32>() + 22.0 + if person { PERSON } else { 0.0 };
             if shape == NodeShape::Cylinder {
-                h += 16.0;
+                h += 3.0 * super::shape::rim(w.max(150.0));
             }
             let f = fill(e);
             let border = oklch((f.to_oklab()[0] - 0.1).max(0.2), 0.06, 252.0);

@@ -1,0 +1,7 @@
+{
+  "events": [
+    { "t": 0.25, "type": "tap", "key": "stage", "expect": "smooth", "element": "hud" },
+    { "t": 1.6, "type": "tap", "key": "badge", "expect": "instant", "scope": "hud" },
+    { "t": 2.4, "type": "tap", "key": "stage", "expect": "smooth", "element": "hud" }
+  ]
+}

@@ -43,8 +43,14 @@ pub struct ElementInfo {
     pub revealing: bool,
     /// Inside a growth row whose height is moving: its visible part is being revealed.
     pub in_growing_row: bool,
-    /// This node is riding user-driven wheel/trackpad scrolling or its momentum.
+    /// This node is riding a scroll: a wheel or trackpad, its momentum, or a glide
+    /// (`Tx::scroll_to`, `scroll_to_with`, `scroll_to_bottom`).
     pub scrolling: bool,
+    /// How far its scroll viewports' offsets carry it this frame, x and y in the window's points
+    /// (scaled and turned as `rect` is): `rect` sits this much left and up of where it would
+    /// unscrolled. Motion checks add it back, so they judge an element against the content it
+    /// scrolls with.
+    pub scrolled: [f32; 2],
     /// Invisible estimated extent of a virtual list, not a drawable surface.
     pub virtual_extent: bool,
     /// Property-specific intentional cuts for 1:1 live bindings (never smoothed bindings).
@@ -171,6 +177,17 @@ impl<S: 'static> Runtime<S> {
         self.nodes.iter().find(|n| n.path == path).is_some_and(Node::is_secure)
     }
 
+    /// What a move of `v` points inside node `i` (a scroll viewport's offset) comes to in the
+    /// window: scaled and turned as its children draw.
+    fn content_to_window(&self, i: usize, v: [f32; 2]) -> [f32; 2] {
+        let Some(h) = self.inh_scratch.get(i) else { return v };
+        let [x, y] = v.map(|c| c * h.scale);
+        match h.turn.checked_sub(1).and_then(|k| self.turn_scratch.get(k as usize)) {
+            Some(t) => [t.mat[0] * x + t.mat[1] * y, t.mat[2] * x + t.mat[3] * y],
+            None => [x, y],
+        }
+    }
+
     pub fn elements(&self) -> Vec<ElementInfo> {
         fn intent(n: &Node) -> u32 {
             n.live.iter().filter(|b| b.spring.is_none()).fold(0, |bits, b| bits | match b.property {
@@ -213,6 +230,7 @@ impl<S: 'static> Runtime<S> {
                 let revealing = flight.is_some() || self.reveals.get(&n.id).is_some_and(|r| !r.words.is_empty());
                 let mut in_growing_row = false;
                 let mut scrolling = false;
+                let mut scrolled = [0.0; 2];
                 let mut live_intent = intent(n);
                 // A group_opacity swap under an instant hover group is a deliberate cut (Beta's
                 // status/close swap), for it and what it contains: opacity and transition intent.
@@ -225,16 +243,41 @@ impl<S: 'static> Runtime<S> {
                         live_intent |= 4 | 16;
                     }
                 }
-                let mut a = step_up(&self.nodes, i);
-                while let Some(pi) = a {
-                    let parent = &self.nodes[pi];
-                    moving |= animating(parent.id)
-                        || self.stacks.get(&parent.id).is_some_and(|s| s.moving)
-                        || self.scrolls.get(&parent.id).is_some_and(|s| s.slack.moving() || s.glide.is_some());
-                    live_intent |= intent(parent);
-                    scrolling |= self.scrolls.get(&parent.id).is_some_and(|s| s.scrolling);
-                    in_growing_row |= self.grows.get(&parent.id).is_some_and(|g| g.moving());
-                    a = step_up(&self.nodes, pi);
+                // Offsets are in points inside the scroll viewport; `rect` is in the window, after
+                // every scale and turn above. Below a lift (a flight or launch drawn over the
+                // window), the scales holding still above it carry them, unturned.
+                let mut lifted = None;
+                let mut j = i;
+                loop {
+                    let to_window = |at: Option<usize>, v: [f32; 2]| match lifted {
+                        Some(k) => v.map(|c| c * k),
+                        None => at.map_or(v, |at| self.content_to_window(at, v)),
+                    };
+                    if j != i && let Some(st) = self.scrolls.get(&self.nodes[j].id) {
+                        let [x, y] = to_window(Some(j), st.drawn);
+                        scrolled = [scrolled[0] + x, scrolled[1] + y];
+                    }
+                    // A launch, and what it carries, leaves under the offsets it launched against
+                    // and takes on the scroll's only as it lands.
+                    let id = self.nodes[j].id;
+                    let parent = self.nodes[j].parent;
+                    let fix = self.launches.carried(&self.scene, id);
+                    if fix != [0.0; 2] {
+                        let k = parent.and_then(|p| self.inh_scratch.get(p)).map_or(1.0, |h| h.still.0);
+                        scrolled = [scrolled[0] - fix[0] * k, scrolled[1] - fix[1] * k];
+                    }
+                    if lifted.is_none() && self.flying.iter().any(|f| f.0 == id) {
+                        lifted = Some(parent.and_then(|p| self.inh_scratch.get(p)).map_or(1.0, |h| h.still.0));
+                    }
+                    let Some(pi) = step_up(&self.nodes, j) else { break };
+                    let p = &self.nodes[pi];
+                    moving |= animating(p.id)
+                        || self.stacks.get(&p.id).is_some_and(|s| s.moving)
+                        || self.scrolls.get(&p.id).is_some_and(|s| s.slack.moving() || s.glide.is_some());
+                    live_intent |= intent(p);
+                    scrolling |= self.scrolls.get(&p.id).is_some_and(ScrollState::moving);
+                    in_growing_row |= self.grows.get(&p.id).is_some_and(|g| g.moving());
+                    j = pi;
                 }
                 let secure = n.is_secure();
                 Some(ElementInfo {
@@ -275,6 +318,7 @@ impl<S: 'static> Runtime<S> {
                     revealing,
                     in_growing_row,
                     scrolling,
+                    scrolled,
                     live_intent,
                     caret: self.caret_rect(&self.nodes, i),
                     drag_out: n.handlers.drag_out.is_some(),
@@ -308,7 +352,7 @@ impl<S: 'static> Runtime<S> {
                 hover: 0.0, press: 0.0, moving: true, parent: None,
                 visible: [r.x.max(c[0]), r.y.max(c[1]), (r.edges()[2].min(c[2]) - r.x.max(c[0])).max(0.0),
                     (r.edges()[3].min(c[3]) - r.y.max(c[1])).max(0.0)],
-                revealing: true, in_growing_row: false, scrolling: false, virtual_extent: false, live_intent: 0, caret: None, drag_out: false,
+                revealing: true, in_growing_row: false, scrolling: false, scrolled: [0.0; 2], virtual_extent: false, live_intent: 0, caret: None, drag_out: false,
                 help: None, selected: None, level: None, expanded: None, item_selected: false, stuck: 0.0,
             });
         }

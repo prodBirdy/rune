@@ -3,11 +3,12 @@
 
 use rune::{Align, Color, TextStyle};
 
-use super::canvas::{Canvas, Measured, Scene, ellipse, measure, measure_wrap, over_color, room, rounded_rect};
-use super::chart::{bold, small};
+use super::canvas::{Canvas, Measured, Scene, ellipse, measure, measure_balanced, measure_wrap, over_color, room, rounded_rect};
+use super::chart::small;
 use super::connector::{self, label_box, title_box};
 use super::layered::{GCluster, GEdge, Graph, Spacing, layout};
 use super::route::Ctx;
+use super::parts::{Kind, Part};
 use super::shape;
 pub(crate) use super::shape::{NodeShape, boundary, node_size, outline};
 use super::{DiagramStyle, EdgeStyle, Hover, NodeStyle};
@@ -68,7 +69,16 @@ pub(crate) struct Edge {
     pub end: Head,
     pub minlen: usize,
     pub style: EdgeStyle,
+    /// `[start, end]`: the subgraph whose border that end stops on, when the source linked the
+    /// subgraph itself. Its node (`from` or `to`) is a member that ranks it.
+    pub on_cluster: [Option<usize>; 2],
 }
+
+/// How far a horizontal diagram may shrink to fit before it turns top-down instead.
+const TURN_BELOW: f32 = 0.78;
+
+/// Where a subgraph's title sits inside its top left corner.
+const TITLE_INSET: [f32; 2] = [10.0, 7.0];
 
 pub(crate) struct ClusterSpec {
     pub title: String,
@@ -161,14 +171,17 @@ pub(crate) fn draw_layered(
     paint: &DiagramStyle,
     hover: Option<(Hover, Color)>,
 ) -> Option<Scene> {
-    let canvas = layered_canvas(dir, nodes, edges, clusters, spacing, paint, hover)?;
+    let canvas = layered_canvas(dir, nodes, &[], edges, clusters, spacing, paint, hover)?;
     canvas.finish_fit(paint)
 }
 
-/// [`draw_layered`] at full size, before [`Canvas::finish`].
+/// [`draw_layered`] at full size, before [`Canvas::finish`], with each node's name in `ids`
+/// (empty: known by index) for a diagram streaming in to hold each node to where it was.
+#[allow(clippy::too_many_arguments, reason = "one layered diagram's whole drawing")]
 pub(crate) fn layered_canvas(
     dir: Dir,
     nodes: &[DrawNode],
+    ids: &[String],
     edges: &[Edge],
     clusters: &[ClusterSpec],
     spacing: &Spacing,
@@ -176,19 +189,24 @@ pub(crate) fn layered_canvas(
     hover: Option<(Hover, Color)>,
 ) -> Option<Canvas> {
     let edge_font = small(paint);
-    let labels: Vec<Option<Measured>> = edges.iter().map(|e| e.label.as_ref().map(|l| measure(l, edge_font))).collect();
-    let title_font = bold(edge_font);
+    let labels: Vec<Option<Measured>> = edges.iter().map(|e| e.label.as_ref().map(|l| measure_balanced(l, edge_font))).collect();
+    let title_font = TextStyle { weight: 500.0, ..edge_font };
     let titles: Vec<Measured> = clusters.iter().map(|c| measure(&c.title, title_font)).collect();
     let fonts = Fonts { edge: edge_font, title: title_font };
-    let parts = Parts { nodes, edges, clusters, labels: &labels, titles: &titles };
+    let parts = Parts { nodes, ids, edges, clusters, labels: &labels, titles: &titles };
     let mut canvas = draw_in(dir, &parts, fonts, spacing, paint, hover)?;
-    // Reflow a horizontal diagram to vertical only when horizontal scaling would drop below 78%.
-    if canvas.width() > room(paint) / 0.78 && matches!(dir, Dir::Right | Dir::Left) {
+    // The turn: a horizontal diagram that would shrink below `TURN_BELOW` of its size to fit
+    // the card is drawn top-down instead, when that comes out narrower.
+    // A diagram streaming in that has turned stays turned.
+    let stay = super::steady::turned();
+    if (stay || canvas.width() > room(paint) / TURN_BELOW) && matches!(dir, Dir::Right | Dir::Left) {
         let down = draw_in(if dir == Dir::Right { Dir::Down } else { Dir::Up }, &parts, fonts, spacing, paint, hover)?;
-        if down.width() < canvas.width() {
+        if stay || down.width() < canvas.width() {
             canvas = down;
+            canvas.turned = true;
         }
     }
+    super::steady::set_turned(canvas.turned);
     Some(canvas)
 }
 
@@ -200,6 +218,7 @@ struct Fonts {
 
 struct Parts<'a> {
     nodes: &'a [DrawNode],
+    ids: &'a [String],
     edges: &'a [Edge],
     clusters: &'a [ClusterSpec],
     labels: &'a [Option<Measured>],
@@ -207,7 +226,7 @@ struct Parts<'a> {
 }
 
 fn draw_in(dir: Dir, p: &Parts, fonts: Fonts, spacing: &Spacing, paint: &DiagramStyle, hover: Option<(Hover, Color)>) -> Option<Canvas> {
-    let Parts { nodes, edges, clusters, labels, titles } = *p;
+    let Parts { nodes, ids, edges, clusters, labels, titles } = *p;
     let across = matches!(dir, Dir::Right | Dir::Left);
     let ax = |s: [f32; 2]| if across { [s[1], s[0]] } else { s };
     let flip = matches!(dir, Dir::Up | Dir::Left);
@@ -226,7 +245,8 @@ fn draw_in(dir: Dir, p: &Parts, fonts: Fonts, spacing: &Spacing, paint: &Diagram
             .iter()
             .zip(titles)
             .map(|(s, t)| {
-                let lead = if t.text.is_empty() { 0.0 } else { t.size[1] + 8.0 };
+                // The title's height and inset, so the gap under it matches the padding on every other side.
+                let lead = if t.text.is_empty() { 0.0 } else { t.size[1] + TITLE_INSET[1] };
                 let min_w = if t.text.is_empty() { 0.0 } else { t.size[0] + 24.0 };
                 GCluster {
                     parent: s.parent,
@@ -235,6 +255,7 @@ fn draw_in(dir: Dir, p: &Parts, fonts: Fonts, spacing: &Spacing, paint: &Diagram
                 }
             })
             .collect(),
+        ids: ids.to_vec(),
     };
     let placed = layout(&graph, spacing)?;
     let pt = |p: [f32; 2]| if across { [p[1], p[0]] } else { p };
@@ -252,7 +273,7 @@ fn draw_in(dir: Dir, p: &Parts, fonts: Fonts, spacing: &Spacing, paint: &Diagram
         v.reverse();
         v
     };
-    let cluster_border = over_color(paint.node_border.alpha(0.45), paint.surface_border);
+    let cluster_border = crate::canvas::group_border(paint);
     let mut title_boxes = Vec::new();
     let mut order: Vec<usize> = (0..clusters.len()).collect();
     order.sort_by_key(|&i| chain_of(Some(i)).len());
@@ -262,16 +283,23 @@ fn draw_in(dir: Dir, p: &Parts, fonts: Fonts, spacing: &Spacing, paint: &Diagram
             continue;
         }
         let (p0, p1) = (pt([b[0], b[1]]), pt([b[2], b[3]]));
+        c.part(Some(Part::Index(Kind::Frame, i)));
         c.shape(rounded_rect(p0[0], p0[1], p1[0], p1[1], 6.0), paint.cluster_fill, cluster_border, 1.0);
-        c.label_at(&titles[i], [p0[0] + 10.0, p0[1] + 7.0], fonts.title, paint.muted, Align::Start);
-        title_boxes.push(title_box(&titles[i], p0));
+        let at = [p0[0] + TITLE_INSET[0], p0[1] + TITLE_INSET[1]];
+        c.label_at(&titles[i], at, fonts.title, paint.muted, Align::Start);
+        if !titles[i].text.is_empty() {
+            title_boxes.push(title_box(&titles[i], at));
+        }
     }
 
     let centers: Vec<[f32; 2]> = placed.centers.iter().map(|&p| pt(p)).collect();
     let sizes: Vec<[f32; 2]> = nodes.iter().map(DrawNode::size).collect();
     let ends = edges.iter().map(|e| (e.from, e.to)).collect();
     let boxes = labels.iter().map(|l| l.as_ref().map(|m| ax(label_box(m)))).collect();
-    let ctx = Ctx::new(&placed, &sizes, nodes.iter().map(DrawNode::shape).collect(), boxes, across, ends).titles(title_boxes);
+    let on_cluster: Vec<[Option<usize>; 2]> = edges.iter().map(|e| e.on_cluster).collect();
+    let ctx = Ctx::new(&placed, &sizes, nodes.iter().map(DrawNode::shape).collect(), boxes, across, ends)
+        .titles(title_boxes.iter().copied())
+        .cluster_ends(&on_cluster);
     // A label pill takes the colour of the innermost subgraph holding both its ends.
     let backs: Vec<Color> = edges
         .iter()
@@ -281,12 +309,14 @@ fn draw_in(dir: Dir, p: &Parts, fonts: Fonts, spacing: &Spacing, paint: &Diagram
             (0..common).fold(paint.surface, |bg, _| over_color(paint.cluster_fill, bg))
         })
         .collect();
-    connector::edges(&mut c, &ctx, edges, labels, &backs, flip, fonts.edge, paint);
+    connector::edges(&mut c, &ctx, edges, labels, &backs, &title_boxes, flip, fonts.edge, paint);
 
     for (i, n) in nodes.iter().enumerate() {
         c.region(i, outline(n.shape(), centers[i], n.size()));
+        c.part(Some(Part::Index(Kind::Node, i)));
         draw_node(&mut c, n, centers[i], paint);
     }
+    c.part(None);
     Some(c)
 }
 
@@ -334,7 +364,7 @@ fn draw_node(c: &mut Canvas, node: &DrawNode, ctr: [f32; 2], paint: &DiagramStyl
         }
         DrawNode::Card { shape, lines, size, colors, person, .. } => {
             shape::draw(c, *shape, &Measured::default(), ctr, *size, *colors, paint);
-            let cap = if *shape == NodeShape::Cylinder { 10.0 } else { 0.0 };
+            let cap = if *shape == NodeShape::Cylinder { shape::rim(size[0]) } else { 0.0 };
             let glyph = if *person { PERSON } else { 0.0 };
             let total = glyph + lines.iter().map(|l| l.0.size[1] + 3.0).sum::<f32>() - 3.0;
             let mut y = ctr[1] - total / 2.0 + cap / 2.0;
@@ -409,3 +439,7 @@ pub(crate) const ENTITY_PAD: [f32; 2] = [10.0, 5.0];
 pub(crate) fn entity_row_h(row: &[Measured]) -> f32 {
     row.iter().map(|m| m.size[1]).fold(0.0, f32::max) + ENTITY_PAD[1] * 2.0
 }
+
+#[cfg(test)]
+#[path = "layered_draw_tests.rs"]
+mod tests;

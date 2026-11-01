@@ -1,0 +1,1 @@
+- The debug "blocked on the main thread" warning no longer counts time spent waiting for a core: Linux subtracts the thread's run-queue wait, and other Unix systems skip it while the load average is at or above the core count, so a busy machine stops reporting callbacks that only wrote a map; the message names the wait when there was one.

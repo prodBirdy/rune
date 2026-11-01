@@ -7,8 +7,6 @@ use std::sync::Arc;
 use objc2_core_foundation::CGSize;
 use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer};
 use objc2_video::rc::{Retained, autoreleasepool};
-use objc2_video::runtime::NSObject;
-use objc2_video::{Message, msg_send};
 use parking_lot::Mutex;
 use raw_window_metal::Layer;
 use wgpu::custom::*;
@@ -32,14 +30,15 @@ pub(crate) struct MetalOutput {
 
 send_sync!(MetalSurface, MetalOutput);
 
-/// A surface on a CAMetalLayer as given, or on one filling an AppKit view (on the main thread).
+/// A surface on a CAMetalLayer as given, or on one filling an AppKit or UIKit view (on the main thread).
 pub(super) unsafe fn create(target: wgpu::SurfaceTargetUnsafe) -> DispatchSurface {
     // SAFETY: the caller hands a live layer or view.
     let layer = unsafe {
         match target {
             wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer) => Layer::from_ca_layer(std::ptr::NonNull::new(layer).expect("a CALayer")),
             wgpu::SurfaceTargetUnsafe::RawHandle { raw_window_handle: wgpu::rwh::RawWindowHandle::AppKit(handle), .. } => Layer::from_ns_view(handle.ns_view),
-            _ => panic!("RUNE_GPU_BACKEND=metal needs an AppKit view or a CALayer"),
+            wgpu::SurfaceTargetUnsafe::RawHandle { raw_window_handle: wgpu::rwh::RawWindowHandle::UiKit(handle), .. } => Layer::from_ui_view(handle.ui_view),
+            _ => panic!("RUNE_GPU_BACKEND=metal needs an AppKit or UIKit view or a CALayer"),
         }
     };
     // SAFETY: `into_raw` hands over its retain of a CAMetalLayer.
@@ -53,7 +52,9 @@ impl MetalSurface {
 
 /// The `NSWindow` hosting `layer`: the first ancestor layer with a delegate is the backing
 /// `NSView`, and its window is the one.
-fn hosting_window(layer: &CALayer) -> Option<Retained<NSObject>> {
+#[cfg(target_os = "macos")]
+fn hosting_window(layer: &CALayer) -> Option<Retained<objc2_video::runtime::NSObject>> {
+    use objc2_video::{Message, msg_send};
     let mut current = Some(layer.retain());
     while let Some(layer) = current {
         if let Some(delegate) = layer.delegate() {
@@ -66,14 +67,19 @@ fn hosting_window(layer: &CALayer) -> Option<Retained<NSObject>> {
 }
 
 /// Whether the window hosting `layer` is fully covered or hidden, where `nextDrawable` would
-/// wait out its timeout for a vsync that never comes.
+/// wait out its timeout for a vsync that never comes. On iOS the host stops its display link
+/// while the app is in the background, so there is nothing to check.
+#[cfg(target_os = "macos")]
 fn occluded(layer: &CALayer) -> bool {
     const VISIBLE: usize = 1 << 1;
     let Some(window) = hosting_window(layer) else { return false };
     // SAFETY: `occlusionState` is an NSWindow property returning NSWindowOcclusionState.
-    let state: usize = unsafe { msg_send![&*window, occlusionState] };
+    let state: usize = unsafe { objc2_video::msg_send![&*window, occlusionState] };
     state & VISIBLE == 0
 }
+
+#[cfg(not(target_os = "macos"))]
+fn occluded(_: &CALayer) -> bool { false }
 
 impl SurfaceInterface for MetalSurface {
     fn get_capabilities(&self, _: &DispatchAdapter) -> wgpu::SurfaceCapabilities {
@@ -105,8 +111,14 @@ impl SurfaceInterface for MetalSurface {
         layer.setColorspace(None);
         layer.setMaximumDrawableCount(config.desired_maximum_frame_latency.clamp(1, 2) as usize + 1);
         layer.setDrawableSize(CGSize::new(f64::from(config.width), f64::from(config.height)));
-        layer.setAllowsNextDrawableTimeout(false);
-        layer.setDisplaySyncEnabled(!matches!(config.present_mode, wgpu::PresentMode::Immediate | wgpu::PresentMode::AutoNoVsync));
+        // iOS layers are always display-synced, and keep the drawable timeout as wgpu-hal does: with
+        // no occlusion check, a host that misses a background transition gets a skipped frame
+        // rather than a main thread waiting forever.
+        #[cfg(target_os = "macos")]
+        {
+            layer.setAllowsNextDrawableTimeout(false);
+            layer.setDisplaySyncEnabled(!matches!(config.present_mode, wgpu::PresentMode::Immediate | wgpu::PresentMode::AutoNoVsync));
+        }
     }
 
     fn get_current_texture(&self) -> (Option<DispatchTexture>, wgpu::SurfaceStatus, DispatchSurfaceOutputDetail) {

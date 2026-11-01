@@ -14,6 +14,8 @@ pub(super) fn emit_block_decorations(
     s: f32,
     tk: f32,
     raster: f32,
+    scale_motion: ScaleMotion,
+    glide: [f32; 2],
     text_color: Color,
     o: f32,
     srgb: bool,
@@ -32,9 +34,9 @@ pub(super) fn emit_block_decorations(
 
     let flush_code = |instances: &mut Vec<Instance>, run: &mut Option<(f32, f32)>| {
         if let Some((top, bot)) = run.take() {
-            let pad_y = (2.0 * s * tk).round();
+            let pad_y = if tk == 1.0 { (2.0 * s).round() } else { 2.0 * s * tk };
             instances.push(rect_inst(
-                [x0, top - pad_y, box_w, (bot - top) + 2.0 * pad_y],
+                [x0 + glide[0], top - pad_y + glide[1], box_w, (bot - top) + 2.0 * pad_y],
                 premul(spec.rich_style.code_block_bg, o, srgb),
                 6.0 * s * tk,
                 clip,
@@ -44,11 +46,11 @@ pub(super) fn emit_block_decorations(
     };
     let flush_quote = |instances: &mut Vec<Instance>, run: &mut Option<(f32, f32)>| {
         if let Some((top, bot)) = run.take() {
-            let bar_w = (3.0 * s * tk).round().max(2.0);
-            let bar_x = (origin[0] + 2.0 * s * tk).round();
-            let inset_y = (2.0 * s * tk).round();
+            let bar_w = if tk == 1.0 { (3.0 * s).round().max(2.0) } else { (3.0 * s * tk).max(2.0 * tk) };
+            let bar_x = if tk == 1.0 { (origin[0] + 2.0 * s).round() } else { origin[0] + 2.0 * s * tk } + glide[0];
+            let inset_y = if tk == 1.0 { (2.0 * s).round() } else { 2.0 * s * tk };
             instances.push(rect_inst(
-                [bar_x, top + inset_y, bar_w, (bot - top - 2.0 * inset_y).max(4.0 * s * tk)],
+                [bar_x, top + inset_y + glide[1], bar_w, (bot - top - 2.0 * inset_y).max(4.0 * s * tk)],
                 premul(spec.rich_style.quote_bar, o, srgb),
                 bar_w * 0.5,
                 clip,
@@ -158,12 +160,13 @@ pub(super) fn emit_block_decorations(
         for (indent_px, baseline_y, blk, num) in markers {
             match blk {
                 Block::Bullet(lvl) => {
-                    let d = (4.5 * s * tk).round().max(3.0);
+                    let d = if tk == 1.0 { (4.5 * s).round().max(3.0) } else { (4.5 * s * tk).max(3.0 * tk) };
                     let cx = origin[0] + (indent_px - (7.0 * s).round()) * tk - d;
-                    let cy = (baseline_y - 0.34 * spec.style.size * s * tk - d * 0.5).round();
+                    let cy = baseline_y - 0.34 * spec.style.size * s * tk - d * 0.5;
+                    let (cx, cy) = if tk == 1.0 { (cx.round(), cy.round()) } else { (cx, cy) };
                     let radius = if lvl >= 2 { 1.0 * s * tk } else { d * 0.5 };
                     let c = if lvl == 1 { premul(marker_color.alpha(marker_color.a * 0.65), o, srgb) } else { mc };
-                    instances.push(rect_inst([cx.round(), cy, d, d], c, radius, clip, fade));
+                    instances.push(rect_inst([cx + glide[0], cy + glide[1], d, d], c, radius, clip, fade));
                 }
                 Block::Numbered(_) => {
                     let label = format!("{num}.");
@@ -172,14 +175,17 @@ pub(super) fn emit_block_decorations(
                     let m_base = ml.lines().next().map_or(spec.style.size * 0.8 * s, |l| l.metrics().baseline);
                     let mx = origin[0] + (indent_px - (5.0 * s).round() - mw) * tk;
                     let my = baseline_y - m_base * tk;
-                    let m_origin = [mx.round(), my.round()];
+                    let m_origin = if tk == 1.0 { [mx.round(), my.round()] } else { [mx, my] };
+                    let m_r_origin = if scale_motion == ScaleMotion::Still { m_origin } else { [0.0, 0.0] };
                     glyph_scratch.clear();
                     text_sys.set_glyph_inks(marker_color, &[]);
-                    text_sys.glyphs_for_layout_scaled(&ml, m_origin, raster, false, glyph_scratch);
+                    text_sys.set_glide(glide);
+                    text_sys.glyphs_for_layout_scaled(&ml, m_r_origin, raster, false, glyph_scratch);
+                    text_sys.set_glide([0.0; 2]);
                     for q in &*glyph_scratch {
                         instances.extend(
                             glyph_or_image(q, text_sys, images, mc, clip, fade)
-                                .map(|g| zoom_glyph(g, m_origin, m_origin, tk / raster)),
+                                .map(|g| zoom_glyph(g, m_origin, m_r_origin, tk / raster)),
                         );
                     }
                 }
@@ -190,7 +196,7 @@ pub(super) fn emit_block_decorations(
 }
 
 /// Pixel caret and logical-point IME area use the same shaped cursor geometry.
-pub(super) fn input_caret(n: &Node, r: [f32; 4], scale: f32, s: f32, scrolls: &mut HashMap<String, f32>) -> Option<([f32; 4], [f32; 4])> {
+pub(super) fn input_caret(n: &Node, r: [f32; 4], scale: f32, s: f32, gliding: bool, scrolls: &mut HashMap<String, f32>) -> Option<([f32; 4], [f32; 4])> {
     let (spec, layout, input) = (n.text.as_ref()?, n.text_layout.as_ref()?, n.input.as_ref()?);
     let e = &input.edit;
     let ins = n.inset.map(|v| v * scale * s);
@@ -203,7 +209,13 @@ pub(super) fn input_caret(n: &Node, r: [f32; 4], scale: f32, s: f32, scrolls: &m
     let bb = crate::text::cursor_geometry(&cur, layout, 1.5 * s);
     let (cx, cy) = (x + bb.x0 as f32 * scale, r[1] + ins[1] + bb.y0 as f32 * scale);
     let h = (if bb.y1 > bb.y0 { (bb.y1 - bb.y0) as f32 } else { spec.style.line_px() * s }) * scale;
-    Some(([cx.round(), cy + h * 0.1, (1.5 * s * scale).round().max(1.0), h * 0.8], [cx / s, cy / s, 2.0 * scale, h / s]))
+    let (caret_x, caret_w) = if (scale - 1.0).abs() <= 1e-5 {
+        let gx = if gliding { pixel_snap::text_glide(r[0]) } else { 0.0 };
+        ((cx - gx).round() + gx, (1.5 * s).round().max(1.0))
+    } else {
+        (cx, (1.5 * s * scale).max(1.0))
+    };
+    Some(([caret_x, cy + h * 0.1, caret_w, h * 0.8], [cx / s, cy / s, 2.0 * scale, h / s]))
 }
 
 /// Whether `looping`'s sampled value multiplies the element's opacity.
@@ -211,9 +223,9 @@ pub(super) fn fades(looping: Option<rune_motion::LoopSpec>) -> bool {
     matches!(looping.map(|l| l.kind), Some(rune_motion::LoopKind::Opacity { .. } | rune_motion::LoopKind::OpacityCycle(_) | rune_motion::LoopKind::Sequence(_)))
 }
 
-/// `rect` (x, y, w, h) magnified `k` times about `origin`.
-pub(super) fn scale_about(rect: [f32; 4], origin: [f32; 2], k: f32) -> [f32; 4] {
-    [origin[0] + (rect[0] - origin[0]) * k, origin[1] + (rect[1] - origin[1]) * k, rect[2] * k, rect[3] * k]
+/// `rect` (x, y, w, h) magnified `k` times from `r_origin` to `origin`.
+pub(super) fn scale_about(rect: [f32; 4], origin: [f32; 2], r_origin: [f32; 2], k: f32) -> [f32; 4] {
+    [origin[0] + (rect[0] - r_origin[0]) * k, origin[1] + (rect[1] - r_origin[1]) * k, rect[2] * k, rect[3] * k]
 }
 
 /// A glyph instance drawn `k` times its rasterized size about `origin`. An alpha glyph keeps

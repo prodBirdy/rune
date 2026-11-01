@@ -155,10 +155,15 @@ pub(super) struct ColorGlyph {
 }
 
 impl ColorGlyph {
-    /// The quad for a pen at `[x, y]`, rounded to whole pixels, then moved down by `glide`
+    /// The quad for a resting pen at `[x, y]`, rounded at rest, then moved by `glide`
     /// (the image draws filtered).
-    pub(super) fn quad(&self, x: f32, y: f32, glide: f32, ink: u16, byte: u32) -> GlyphQuad {
-        let rect = [x.round() + self.left as f32, y.round() - self.top as f32 + glide, self.w as f32, self.h as f32];
+    pub(super) fn quad(&self, x: f32, y: f32, glide: [f32; 2], ink: u16, byte: u32) -> GlyphQuad {
+        let rect = [
+            x.round() + self.left as f32 + glide[0],
+            y.round() - self.top as f32 + glide[1],
+            self.w as f32,
+            self.h as f32,
+        ];
         GlyphQuad { rect, uv: [0.0, 0.0], ink, byte, color: self.index }
     }
 }

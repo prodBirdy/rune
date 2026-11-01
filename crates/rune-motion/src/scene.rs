@@ -195,6 +195,8 @@ pub struct Presented {
     /// motion-lint flags (animated, ancestorAnimated, clipped, filtered) and intent bits
     /// (own `<< 8`, ancestor `<< 16`).
     pub flags: u32,
+    /// How much of this node's own shape is drawn, 0 to 1 ([`crate::Transition::draw`]).
+    pub draw: f32,
 }
 
 impl Presented {
@@ -223,13 +225,14 @@ struct Path {
     origin: Vec2,
 }
 
-// Effect state lanes: opacity, scale, offset x/y, size-fraction offset x/y, blur, hidden reveal.
-type Fx = [f32; 8];
-const FX_ID: Fx = [1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+// Effect state lanes: opacity, scale, offset x/y, size-fraction offset x/y, blur, hidden reveal,
+// drawn shape.
+type Fx = [f32; 9];
+const FX_ID: Fx = [1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
 fn fx_of(e: &Effect) -> Fx {
     let hidden = if e.reveal.is_some() { 1.0 } else { 0.0 };
-    [e.opacity, e.scale, e.offset.x, e.offset.y, e.offset_fraction.x, e.offset_fraction.y, e.blur, hidden]
+    [e.opacity, e.scale, e.offset.x, e.offset.y, e.offset_fraction.x, e.offset_fraction.y, e.blur, hidden, e.draw]
 }
 
 #[derive(Clone)]
@@ -857,7 +860,7 @@ impl Scene {
         };
         let p = self.targets::<1>(i, prop::PRESENCE.id).map_or(1.0, |v| v[0]);
         let s = lerp_fx(&n.fx_a, &n.fx_b, p);
-        let s = if reduced { [s[0], 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] } else { s };
+        let s = if reduced { [s[0], 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] } else { s };
         let own = self.targets::<2>(i, prop::OFFSET.id).map_or(Vec2::ZERO, |v| Vec2::read_lanes(&v));
         world.translated(Vec2::new(own.x + s[2] + s[4] * world.w, own.y + s[3] + s[5] * world.h))
     }
@@ -886,7 +889,7 @@ impl Scene {
         };
         let p = self.values(i, prop::PRESENCE.id).map_or(1.0, |v| v[0]);
         let s = lerp_fx(&n.fx_a, &n.fx_b, p);
-        let s = if reduced { [s[0], 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] } else { s };
+        let s = if reduced { [s[0], 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] } else { s };
         let own_opacity = self.values(i, prop::OPACITY.id).map_or(n.opacity, |v| v[0]);
         let own_scale = self.values(i, prop::SCALE.id).map_or(1.0, |v| v[0]);
         let own_offset = self.values(i, prop::OFFSET.id).map_or(Vec2::ZERO, Vec2::read_lanes);
@@ -964,6 +967,7 @@ impl Scene {
             phase: n.phase,
             in_flow,
             flags: fl,
+            draw: s[8].clamp(0.0, 1.0),
         };
         // Where it is is where it rests while nothing that places it is in flight. A node riding
         // its parent's trailing edge also moves with the parent's width.

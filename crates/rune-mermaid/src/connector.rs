@@ -5,7 +5,8 @@ use rune::{Align, Color, TextStyle};
 
 use super::canvas::{Canvas, Measured, arrowhead, diamond_head, ellipse, lerp, rounded_rect, smooth, unit};
 use super::layered_draw::{Edge, Head, Line};
-use super::route::Ctx;
+use super::parts::{Kind, Part};
+use super::route::{Ctx, Route};
 use super::{DiagramStyle, adapt_stroke};
 
 const ARROW: f32 = 9.0;
@@ -15,9 +16,9 @@ pub(crate) fn label_box(m: &Measured) -> [f32; 2] {
     [m.size[0] + 12.0, m.size[1] + 6.0]
 }
 
-/// Where a subgraph's title sits, with a little air, for a subgraph whose top left is `p0`.
-pub(crate) fn title_box(m: &Measured, p0: [f32; 2]) -> [f32; 4] {
-    [p0[0] + 6.0, p0[1] + 3.0, p0[0] + 14.0 + m.size[0], p0[1] + 11.0 + m.size[1]]
+/// A subgraph's title drawn from `at`, with a little air.
+pub(crate) fn title_box(m: &Measured, at: [f32; 2]) -> [f32; 4] {
+    [at[0] - 4.0, at[1] - 4.0, at[0] + m.size[0] + 4.0, at[1] + m.size[1] + 4.0]
 }
 
 /// How far a head of kind `h` takes its end of the line back.
@@ -46,43 +47,62 @@ fn pen(e: &Edge, paint: &DiagramStyle) -> (Color, f32) {
 
 /// Every edge routed through `ctx`, with its label in a gap in the line (on a pill of `backs[i]`
 /// where it would cover a subgraph's border); each edge's drawing and label are kept as a trace
-/// so hovering either node, the edge or its label lights them up.
+/// so hovering either node, the edge or its label lights them up. Where an edge still has to
+/// cross text, another edge's label or a subgraph's title (`titles`), the line breaks around it
+/// the way it does around its own label.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn edges(c: &mut Canvas, ctx: &Ctx, edges: &[Edge], labels: &[Option<Measured>], backs: &[Color], flip: bool, font: TextStyle, paint: &DiagramStyle) {
+pub(crate) fn edges(c: &mut Canvas, ctx: &Ctx, edges: &[Edge], labels: &[Option<Measured>], backs: &[Color], titles: &[[f32; 4]], flip: bool, font: TextStyle, paint: &DiagramStyle) {
+    let routes: Vec<Option<(Route, Option<[f32; 4]>)>> = (0..edges.len())
+        .map(|i| {
+            let e = &edges[i];
+            (ctx.placed.paths[i].len() > 1).then(|| {
+                let r = ctx.route(i, flip, [inset(e.start), inset(e.end)]);
+                let gap = labels[i].as_ref().zip(r.label).map(|(m, at)| {
+                    let s = label_box(m);
+                    [at[0] - s[0] / 2.0, at[1] - s[1] / 2.0, at[0] + s[0] / 2.0, at[1] + s[1] / 2.0]
+                });
+                (r, gap)
+            })
+        })
+        .collect();
     for (i, e) in edges.iter().enumerate() {
+        c.part(Some(Part::Index(Kind::Edge, i)));
         let start = c.ops.len();
         let (color, _) = pen(e, paint);
         let back = backs.get(i).copied().unwrap_or(paint.surface);
         let mut lit_label = None;
-        if ctx.placed.paths[i].len() <= 1 {
-            let s = labels[i].as_ref().map_or(0.0, |m| label_box(m)[0]);
-            let at = self_loop(c, e, ctx.screen(ctx.placed.centers[e.from]), ctx.sizes[e.from], paint);
-            if let Some(m) = &labels[i] {
-                let b = label_box(m);
-                lit_label = Some((c.labels.len(), [at[0], at[1] - b[1] / 2.0, at[0] + b[0], at[1] + b[1] / 2.0], back));
-                c.label(m, [at[0] + s / 2.0, at[1]], font, paint.text, Align::Center);
-            }
-        } else {
-            let r = ctx.route(i, flip, [inset(e.start), inset(e.end)]);
-            let gap = labels[i].as_ref().zip(r.label).map(|(m, at)| {
-                let s = label_box(m);
-                [at[0] - s[0] / 2.0, at[1] - s[1] / 2.0, at[0] + s[0] / 2.0, at[1] + s[1] / 2.0]
-            });
-            let runs = gap.map_or_else(|| vec![r.curve.clone()], |g| outside(&r.curve, g));
-            connector(c, &runs, [(r.tip_start, r.dir_start), (r.tip_end, r.dir_end)], e, paint);
-            if let (Some(m), Some(at), Some(g)) = (&labels[i], r.label, gap) {
-                // A label left on a subgraph's border hides it, as the line does around it.
-                if ctx.on_border(g) {
-                    c.fill(rounded_rect(g[0], g[1], g[2], g[3], 4.0), back);
+        match &routes[i] {
+            None => {
+                let s = labels[i].as_ref().map_or(0.0, |m| label_box(m)[0]);
+                let at = self_loop(c, e, ctx.screen(ctx.placed.centers[e.from]), ctx.sizes[e.from], paint);
+                if let Some(m) = &labels[i] {
+                    let b = label_box(m);
+                    lit_label = Some((c.labels.len(), [at[0], at[1] - b[1] / 2.0, at[0] + b[0], at[1] + b[1] / 2.0], back));
+                    c.label(m, [at[0] + s / 2.0, at[1]], font, paint.muted, Align::Center);
                 }
-                lit_label = Some((c.labels.len(), g, back));
-                c.label(m, at, font, paint.text, Align::Center);
+            }
+            Some((r, gap)) => {
+                let others = routes.iter().enumerate().filter(|&(j, _)| j != i).filter_map(|(_, o)| o.as_ref().and_then(|o| o.1));
+                let mut runs = vec![r.curve.clone()];
+                for rect in gap.iter().copied().chain(titles.iter().copied()).chain(others) {
+                    runs = runs.iter().flat_map(|run| outside(run, rect)).collect();
+                }
+                connector(c, &runs, [(r.tip_start, r.dir_start), (r.tip_end, r.dir_end)], e, paint);
+                if let (Some(m), Some(at), Some(g)) = (&labels[i], r.label, *gap) {
+                    // A label left on a subgraph's border hides it, as the line does around it.
+                    if ctx.on_border(g) {
+                        c.fill(rounded_rect(g[0], g[1], g[2], g[3], 4.0), back);
+                    }
+                    lit_label = Some((c.labels.len(), g, back));
+                    c.label(m, at, font, paint.muted, Align::Center);
+                }
             }
         }
         // A label with no text draws nothing, so nothing lights.
         let lit_label = lit_label.filter(|l| l.0 < c.labels.len());
         c.trace(e.from, e.to, start, color, lit_label);
     }
+    c.part(None);
 }
 
 /// The runs of `curve` outside `rect` (`[x0, y0, x1, y1]`), cut where they cross its edge.

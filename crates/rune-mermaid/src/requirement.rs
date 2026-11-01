@@ -100,6 +100,7 @@ pub(crate) fn parse(body: &[&str]) -> Option<Requirements> {
                 end: if contains { Head::None } else { Head::Arrow },
                 minlen: 1,
                 style: EdgeStyle::default(),
+                on_cluster: [None; 2],
             });
         }
         if d.nodes.len() + d.edges.len() > MAX_ITEMS {

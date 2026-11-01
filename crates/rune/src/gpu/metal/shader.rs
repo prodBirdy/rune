@@ -1,13 +1,15 @@
 //! Shader modules stay naga IR until a pipeline names an entry point; then naga translates it
-//! to MSL with the pipeline layout's slots and Metal compiles it, as wgpu-hal does. A module
-//! from a precompiled `.metallib` (`create_shader_module_passthrough`) skips both: its
-//! functions are looked up by name, and must read no sizes buffer.
+//! to MSL with the pipeline layout's slots and Metal compiles it, as wgpu-hal does. A pipeline
+//! of Rune's own (`builtin`) takes that function precompiled instead, and a module whose every
+//! pipeline is one of those is never parsed. A module from a precompiled `.metallib`
+//! (`create_shader_module_passthrough`) skips both: its functions are looked up by name, and
+//! must read no sizes buffer.
 
 use std::ffi::c_void;
 use std::future::ready;
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::sync::Arc;
+use std::sync::OnceLock;
 
 use objc2_foundation_video::{NSError, NSString};
 use objc2_metal::{MTLCompileOptions, MTLDevice, MTLFunction, MTLLibrary};
@@ -22,7 +24,7 @@ use wgpu::naga::{
     valid::{Capabilities, ValidationFlags, Validator},
 };
 
-use super::{Obj, Shared, send_sync};
+use super::{Obj, Shared, builtin, send_sync};
 
 #[derive(Debug)]
 pub(crate) enum ShaderModule {
@@ -32,12 +34,14 @@ pub(crate) enum ShaderModule {
 }
 send_sync!(ShaderModule);
 
-/// A WGSL module, validated, and the runtime checks its MSL keeps.
+/// A WGSL module, validated when first needed, and the runtime checks its MSL keeps.
 #[derive(Debug)]
 pub(crate) struct Ir {
-    module: Arc<naga::Module>,
-    info: Arc<naga::valid::ModuleInfo>,
-    checks: wgpu::ShaderRuntimeChecks,
+    label: String,
+    source: String,
+    pub(super) hash: blake3::Hash,
+    parsed: OnceLock<(naga::Module, naga::valid::ModuleInfo)>,
+    pub(super) checks: wgpu::ShaderRuntimeChecks,
 }
 
 /// An entry point compiled for one pipeline, and the storage bindings whose byte sizes it reads
@@ -79,37 +83,49 @@ unsafe extern "C" {
 }
 
 impl Ir {
+    /// Parses and validates `source` now, unless it is a built-in shader, which parses only if a
+    /// pipeline needs a function the precompiled library lacks.
+    pub(super) fn new(label: &str, source: &str, checks: wgpu::ShaderRuntimeChecks) -> Self {
+        let hash = blake3::hash(source.as_bytes());
+        let ir = Ir { label: label.into(), source: source.into(), hash, parsed: OnceLock::new(), checks };
+        if !builtin::known(&hash) { ir.parsed(); }
+        ir
+    }
+
+    #[cfg(test)]
     pub(super) fn parse(label: &str, source: &str, checks: wgpu::ShaderRuntimeChecks) -> Self {
-        let module = naga::front::wgsl::parse_str(source).unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
-        let info = Validator::new(ValidationFlags::all(), Capabilities::all())
-            .validate(&module)
-            .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
-        Ir { module: Arc::new(module), info: Arc::new(info), checks }
+        let ir = Ir { label: label.into(), source: source.into(), hash: blake3::hash(source.as_bytes()), parsed: OnceLock::new(), checks };
+        ir.parsed();
+        ir
+    }
+
+    fn parsed(&self) -> &(naga::Module, naga::valid::ModuleInfo) {
+        self.parsed.get_or_init(|| {
+            let (label, source) = (&self.label, &self.source);
+            let module = naga::front::wgsl::parse_str(source).unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
+            let info = Validator::new(ValidationFlags::all(), Capabilities::all())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
+            (module, info)
+        })
+    }
+
+    pub(super) fn parts(&self) -> (&naga::Module, &naga::valid::ModuleInfo) {
+        let (module, info) = self.parsed();
+        (module, info)
     }
 }
 
 impl ShaderModule {
     pub(crate) fn new(desc: wgpu::ShaderModuleDescriptor<'_>, checks: wgpu::ShaderRuntimeChecks) -> Self {
-        let wgpu::ShaderSource::Wgsl(source) = desc.source else { unimplemented!("RUNE_GPU_BACKEND=metal: shaders other than WGSL") };
-        ShaderModule::Naga(Ir::parse(desc.label.unwrap_or("shader"), &source, checks))
+        let wgpu::ShaderSource::Wgsl(source) = desc.source else { super::unsupported!("shaders other than WGSL") };
+        ShaderModule::Naga(Ir::new(desc.label.unwrap_or("shader"), &source, checks))
     }
 
     pub(crate) fn passthrough(shared: &Shared, desc: &wgpu::ShaderModuleDescriptorPassthrough<'_>) -> Self {
-        let bytes = desc.metallib.as_deref().expect("RUNE_GPU_BACKEND=metal: passthrough shaders other than a metallib");
+        let bytes = desc.metallib.as_deref().unwrap_or_else(|| super::unsupported!("passthrough shaders other than a metallib"));
         let entries = desc.entry_points.iter().map(|e| (e.name.to_string(), [e.workgroup_size.0, e.workgroup_size.1, e.workgroup_size.2])).collect();
-        let library = NonNull::new(bytes.as_ptr().cast_mut()).ok_or_else(|| "an empty metallib".to_string()).and_then(|buffer| {
-            // SAFETY: dispatch copies `bytes` (the default destructor), and the data object is
-            // released after Metal has read it.
-            unsafe {
-                let data = dispatch_data_create(buffer.cast(), bytes.len(), std::ptr::null_mut(), std::ptr::null_mut());
-                assert!(!data.is_null(), "dispatch data for a metallib");
-                let library: Result<Retained<ProtocolObject<dyn MTLLibrary>>, Retained<NSError>> =
-                    msg_send![&*shared.device, newLibraryWithData: data, error: _];
-                dispatch_release(data);
-                library.map_err(|e| e.localizedDescription().to_string())
-            }
-        });
-        ShaderModule::Library { library, entries }
+        ShaderModule::Library { library: library(shared, bytes), entries }
     }
 
     /// Whether every entry point can make a pipeline: a precompiled library loaded and holds
@@ -136,8 +152,13 @@ pub(super) fn compile(shared: &Shared, stage: &Stage<'_>, resources: &msl::Entry
     let shader = stage.module.as_custom::<ShaderModule>().expect("a Metal shader module");
     match shader {
         ShaderModule::Naga(ir) => {
-            let (lang, version) = shared.msl;
             let point = Point { kind: stage.kind, entry: stage.entry, constants: stage.constants };
+            let key = builtin::key(ir, &point, resources, points);
+            if let Some(compiled) = builtin::find(shared, &key) {
+                return Ok(compiled);
+            }
+            builtin::capture(ir, &point, resources, points, &key);
+            let (lang, version) = shared.msl;
             let msl = translate(ir, &point, resources, points, lang)?;
             let compile = MTLCompileOptions::new();
             compile.setLanguageVersion(version);
@@ -164,13 +185,30 @@ pub(super) fn compile(shared: &Shared, stage: &Stage<'_>, resources: &msl::Entry
     }
 }
 
-fn function(library: &ProtocolObject<dyn MTLLibrary>, name: &str) -> Result<Obj<dyn MTLFunction>, String> {
+/// The library a `.metallib`'s bytes hold, or why Metal refused it.
+pub(super) fn library(shared: &Shared, bytes: &[u8]) -> Result<Obj<dyn MTLLibrary>, String> {
+    NonNull::new(bytes.as_ptr().cast_mut()).ok_or_else(|| "an empty metallib".to_string()).and_then(|buffer| {
+        // SAFETY: dispatch copies `bytes` (the default destructor), and the data object is
+        // released after Metal has read it.
+        unsafe {
+            let data = dispatch_data_create(buffer.cast(), bytes.len(), std::ptr::null_mut(), std::ptr::null_mut());
+            assert!(!data.is_null(), "dispatch data for a metallib");
+            let library: Result<Retained<ProtocolObject<dyn MTLLibrary>>, Retained<NSError>> =
+                msg_send![&*shared.device, newLibraryWithData: data, error: _];
+            dispatch_release(data);
+            library.map_err(|e| e.localizedDescription().to_string())
+        }
+    })
+}
+
+pub(super) fn function(library: &ProtocolObject<dyn MTLLibrary>, name: &str) -> Result<Obj<dyn MTLFunction>, String> {
     library.newFunctionWithName(&NSString::from_str(name)).ok_or_else(|| format!("no function {name}"))
 }
 
 /// Translates `point` to MSL `lang`, binding `resources`.
 pub(super) fn translate(ir: &Ir, point: &Point<'_>, resources: &msl::EntryPointResources, points: bool, lang: (u8, u8)) -> Result<Msl, String> {
-    let Ir { module, info, checks } = ir;
+    let (module, info) = ir.parsed();
+    let checks = &ir.checks;
     let name = match point.entry {
         Some(name) => name.to_string(),
         None => {

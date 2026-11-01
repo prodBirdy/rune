@@ -169,16 +169,16 @@ fn link_styles_heads_lengths_and_labels() {
 fn quoted_edge_labels_nested_brackets_and_styles() {
     let f = flow(
         "flowchart LR\n\
-         A[Audio] --> B[Parakeet writes text<br/>'went to the avatar']\n\
+         A[Audio] --> B[Parakeet writes text<br/>'went to the capuchin']\n\
          B --> C{Any word that looks<br/>or sounds like a term?}\n\
          C -- no --> F[Paste as is]\n\
-         C -- \"avatar ≈ Abattoir\" --> D[Score the same audio twice:<br/>as 'avatar' and as 'Abattoir']\n\
+         C -- \"capuchin ≈ Cappuccino\" --> D[Score the same audio twice:<br/>as 'capuchin' and as 'Cappuccino']\n\
          D --> E(Call fn(x)) --> G[items[0]]\n\
          G -->|\"a | b\"| F\n\
          style D fill:#dcf5dc",
     );
     let to_d = f.edges.iter().find(|e| f.nodes[e.to].id == "D").unwrap();
-    assert_eq!(to_d.label.as_deref(), Some("avatar ≈ Abattoir"));
+    assert_eq!(to_d.label.as_deref(), Some("capuchin ≈ Cappuccino"));
     let to_f = f.edges.iter().rfind(|e| f.nodes[e.to].id == "F").unwrap();
     assert_eq!(to_f.label.as_deref(), Some("a | b"));
     assert_eq!(f.nodes.iter().find(|n| n.id == "E").unwrap().label, "Call fn(x)");

@@ -164,7 +164,7 @@ fn opt_box_eq<T: PartialEq>(a: &Option<Box<T>>, b: &Option<Box<T>>) -> bool {
 
 fn same_visual_cold(a: &crate::el::VisualCold, b: &crate::el::VisualCold) -> bool {
     let crate::el::VisualCold {
-        surface, border_bottom, border_dash, border_dash_phase, shadows, blur_motion,
+        surface, surface_place, border_bottom, border_dash, border_dash_phase, shadows, blur_motion,
         clip, clip_radius, clip_corners, icon, gradient, radial, outline, shape,
         pixels, pixels_fit, effect, backdrop_blur, hover_motion, hover_within,
         group_opacity, group_color, hover_alone, icon_turn, cache_key, offset_motion, scale_motion,
@@ -174,7 +174,7 @@ fn same_visual_cold(a: &crate::el::VisualCold, b: &crate::el::VisualCold) -> boo
         (None, None) => true,
         (Some((sa, fa)), Some((sb, fb))) => sa.key() == sb.key() && fa == fb,
         _ => false,
-    }) && a.border_bottom == *border_bottom && a.border_dash == *border_dash
+    }) && a.surface_place == *surface_place && a.border_bottom == *border_bottom && a.border_dash == *border_dash
         && a.border_dash_phase == *border_dash_phase && a.shadows == *shadows
         && opt_box_eq(&a.blur_motion, blur_motion) && a.clip == *clip
         && a.clip_radius == *clip_radius && a.clip_corners == *clip_corners
@@ -281,6 +281,7 @@ fn same_handlers(
         on_layout,
         on_screen_layout,
         on_drawn_layout,
+        drawn_rect,
         on_scroll_offset,
         selection_copy,
         on_selection_change,
@@ -321,6 +322,11 @@ fn same_handlers(
         && opt_rc_eq(&a.on_layout, on_layout)
         && opt_rc_eq(&a.on_screen_layout, on_screen_layout)
         && opt_rc_eq(&a.on_drawn_layout, on_drawn_layout)
+        && match (&a.drawn_rect, drawn_rect) {
+            (None, None) => true,
+            (Some(la), Some(lb)) => std::sync::Arc::ptr_eq(&la.source, &lb.source),
+            _ => false,
+        }
         && opt_rc_eq(&a.on_scroll_offset, on_scroll_offset)
         && opt_rc_eq(&a.selection_copy, selection_copy)
         && opt_rc_eq(&a.on_selection_change, on_selection_change)

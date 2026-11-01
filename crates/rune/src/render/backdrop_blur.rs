@@ -91,7 +91,7 @@ fn levels(sigma: f32, top: usize) -> (usize, f32) {
 }
 
 impl BackdropBlur {
-    fn new(device: &wgpu::Device, uber: &wgpu::BindGroupLayout) -> Self {
+    pub(super) fn new(device: &wgpu::Device, uber: &wgpu::BindGroupLayout) -> Self {
         let texture = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -219,7 +219,7 @@ impl BackdropBlur {
         }
     }
 
-    fn ensure_composite(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
+    pub(super) fn ensure_composite(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
         if self.composites.iter().any(|(f, _)| *f == format) { return; }
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("backdrop blur composite"),

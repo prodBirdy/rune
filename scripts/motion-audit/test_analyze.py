@@ -41,9 +41,11 @@ def sheen(wrap_from, wrap_to):
     return before + after
 
 
-def scene(frames, flags=None):
-    """A 120 Hz trace of named elements; each frame maps name -> (x, y, w, h, opacity), and a
-    name missing from a frame is gone. A name's parent is its longest named prefix."""
+def scene(frames, flags=None, clips=None):
+    """A 120 Hz trace of named elements; each frame maps name -> (x, y, w, h, opacity), plus
+    how far scrolling carries it as (x, y) when it scrolls, and a name missing from a frame is
+    gone. A name's parent is its longest named prefix. `clips` maps a name to a window-space
+    clip (x0, y0, x1, y1) cutting the visible part of it and what it holds."""
     names = sorted({nm for fr in frames for nm in fr})
     ids = {nm: i + 1 for i, nm in enumerate(names)}
     def parent(nm):
@@ -52,12 +54,18 @@ def scene(frames, flags=None):
     lines = [json.dumps({"width": 400, "height": 400, "hz": 120})]
     alive, meta = set(), set()
     for fr in frames:
-        out = {"e": [], "quality": {"animating": True}, "m": [], "g": []}
-        for nm, (x, y, w, h, op) in fr.items():
+        out = {"e": [], "quality": {"animating": True}, "m": [], "g": [], "sc": []}
+        for nm, (x, y, w, h, op, *sc) in fr.items():
+            out["sc"] += [[ids[nm], *sc[0]]] if sc else []
             if nm not in meta:
                 meta.add(nm)
                 out["m"].append({"id": ids[nm], "nm": nm, "pv": parent(nm)})
-            out["e"].append([ids[nm], x, y, w, h, op, 0, (flags or {}).get(nm, 0), x, y, w, h])
+            vis = [x, y, w, h]
+            for c in [c for p, c in (clips or {}).items() if nm == p or nm.startswith(p + "/")]:
+                x0, y0 = max(vis[0], c[0]), max(vis[1], c[1])
+                x1, y1 = min(vis[0] + vis[2], c[2]), min(vis[1] + vis[3], c[3])
+                vis = [x0, y0, max(x1 - x0, 0), max(y1 - y0, 0)]
+            out["e"].append([ids[nm], x, y, w, h, op, 0, (flags or {}).get(nm, 0), *vis])
             alive.add(nm)
         for nm in sorted(alive - set(fr)):
             out["g"].append(ids[nm])
@@ -69,8 +77,8 @@ def scene(frames, flags=None):
     return f.name
 
 
-def kinds(frames, events=None, flags=None):
-    path = scene(frames, flags)
+def kinds(frames, events=None, flags=None, clips=None):
+    path = scene(frames, flags, clips)
     try:
         return [f["kind"] for f in analyze.analyze(path, {"events": events} if events else None)["findings"]]
     finally:
@@ -130,6 +138,57 @@ def main():
     # a drift out and back that rests a frame where it turns is still one motion.
     drift = hold(at(100, 100), 5) + [at(x, 100) for x in ease(100, 97.5, 6)] + hold(at(97.5, 100), 2) + [at(x, 100) for x in ease(97.5, 100, 12)] + hold(at(100, 100), 10)
     assert "reversal" in kinds(drift), "out and back with a rest at the turn"
+    # in a list following its growing end, 2 pt a frame up: judged against the scroll.
+    def scrolling(own, flags=0, told=True):
+        frames = []
+        for k in range(140):
+            t = min(max(k - 40, 0), 60)
+            frames.append({**still, "root/list/node": (100, 300 + own(t) - 2 * t, 40, 40, 1, *([(0, 2 * t)] if told else []))})
+        return kinds(frames, flags={"root/list/node": flags})
+    glide = lambda k: 60 * (1 - math.exp(-k / 8))
+    assert "reversal" in scrolling(glide, told=False), "on screen the glide and the scroll turn back"
+    assert not {"reversal", "jiggle", "overshoot", "stall"} & set(scrolling(glide)), "against the scroll it is one glide"
+    assert not {"reversal", "jiggle", "overshoot", "stall"} & set(scrolling(glide, analyze.SCROLLING))
+    wobble = lambda k: 2.5 * math.sin(k * 0.6)
+    assert "jiggle" not in scrolling(wobble, told=False), "on screen it only ever rises"
+    assert "jiggle" in scrolling(wobble), "against the scroll it wobbles"
+    assert "jiggle" in scrolling(wobble, analyze.SCROLLING), "a scroll that moves doesn't excuse it"
+
+    # jumps are judged on what shows. A fold drops 900 pt above a 200 pt viewport in one frame
+    # with the scroll offset: the content's and the fold's tops and heights step, while what
+    # shows stays put.
+    view = {"root/list": (0, 0, 400, 200)}
+    def frame(content, fold, extra=None):
+        return {**still, "root/list": (0, *content, 1), "root/list/fold": (0, *fold, 1),
+                "root/list/fold/a": (0, 60, 400, 40, 1), "root/list/after": (0, 150, 400, 100, 1), **(extra or {})}
+    drop = hold(frame((-1100, 400, 1500), (-900, 400, 1200)), 40) + hold(frame((-200, 400, 600), (0, 400, 300)), 40)
+    found = set(kinds(drop, clips=view))
+    assert not {"jump", "step", "sibling-jump"} & found, f"nothing that shows moves: {found}"
+    # Shut from its stuck header, the fold drops its rows above the window and its top comes
+    # in from the window's edge, gliding down from where it showed.
+    def shut(top):
+        return {**still, "root/list": (0, top - 1100, 400, 1500, 1), "root/list/fold": (0, top, 400, 200 - top, 1),
+                "root/list/after": (0, 200, 400, 100, 1)}
+    glide = hold(shut(-900), 40) + [shut(t) for t in (13, 43, 73, 100, 120, 135, 145, 150)] + hold(shut(150), 40)
+    found = set(kinds(glide, clips=view))
+    assert not {"jump", "step", "sibling-jump"} & found, f"it glides from where it showed: {found}"
+    # A row that shows, teleported 100 pt in the scrolled list, jumps.
+    row = lambda y: {"root/list/fold/row": (0, y, 400, 30, 1)}
+    tele = hold(frame((-200, 400, 600), (0, 400, 300), row(20)), 40) + hold(frame((-200, 400, 600), (0, 400, 300), row(120)), 40)
+    assert "jump" in kinds(tele, clips=view), "a row that shows jumps"
+    # The content jumps 100 pt and the rows that show with it.
+    shift = lambda dy: {**still, "root/list": (0, -600 + dy, 400, 2000, 1), "root/list/a": (0, 20 + dy, 400, 30, 1), "root/list/b": (0, 60 + dy, 400, 30, 1)}
+    assert "jump" in kinds(hold(shift(0), 40) + hold(shift(100), 40), clips=view), "the content jumps with what shows of it"
+    # The offset jumps 40 pt with no input: the first row, just under the viewport, pops 40 pt
+    # into view, though nothing showed on both frames. Under a key, it's the key's scroll.
+    pad = lambda dy: {**still, "root/list": (0, -dy, 400, 1100, 1), "root/list/row": (0, 300 - dy, 400, 40, 1)}
+    padded = hold(pad(0), 40) + hold(pad(40), 40)
+    port, scroll = {"root/list": (0, 0, 400, 300)}, {"root/list": analyze.SCROLLING, "root/list/row": analyze.SCROLLING}
+    assert "jump" in kinds(padded, flags=scroll, clips=port), "content that teleports a row into view"
+    end = [{"t": 40 / 120, "type": "key", "name": "End"}]
+    assert not {"jump", "step"} & set(kinds(padded, end, flags=scroll, clips=port)), "a key's scroll"
+    glide = hold(pad(0), 40) + [pad(y) for y in ease(0, 40, 20)] + hold(pad(40), 20)
+    assert not {"jump", "step"} & set(kinds(glide, flags=scroll, clips=port)), "a scroll that glides"
 
     # one steady speed: a retarget that drops part of its speed for a frame stalls; one that
     # keeps its speed and only pulls harder toward a farther target doesn't.
@@ -179,6 +238,27 @@ def main():
     assert not jumps(sheen((1.0, 10.0), (0.0, 10.0))), "a wrap into transparent isn't a jump"
     found = jumps(sheen((1.0, 10.0), (1.0, 10.0)))
     assert len(found) == 1 and found[0]["at"] == "10", f"a wrap in sight is: {found}"
+
+    # scale-settle: a <= 100 ms pixel-snap settle right after motion isn't idle; a cold or long one is.
+    def scale_settle_trace(settle_frames, preceded_by_motion=True):
+        lines = [json.dumps({"width": 200, "height": 100, "hz": 120})]
+        lines.append(json.dumps({"m": [{"id": 1, "nm": "stage"}], "e": [[1, 10, 10, 40, 20, 1, 0, 0]], "quality": {"animating": False, "why": []}}))
+        if preceded_by_motion:
+            lines.append(json.dumps({"e": [[1, 14, 10, 64, 32, 1, 0, 1]], "tk": [[1, "scale", 1]], "quality": {"animating": True, "why": ["tracks"]}}))
+        for _ in range(settle_frames):
+            lines.append(json.dumps({"quality": {"animating": True, "why": ["scale-settle"]}}))
+        lines.append(json.dumps({"quality": {"animating": False, "why": []}}))
+        f = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        f.write("\n".join(lines) + "\n")
+        f.close()
+        try:
+            return [x["kind"] for x in analyze.analyze(f.name)["findings"]]
+        finally:
+            os.unlink(f.name)
+
+    assert "idle-frames" not in scale_settle_trace(12, True), "100 ms scale-settle after motion"
+    assert "idle-frames" in scale_settle_trace(20, True), "overrun scale-settle"
+    assert "idle-frames" in scale_settle_trace(6, False), "cold scale-settle"
     print("ok")
 
 

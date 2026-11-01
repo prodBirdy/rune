@@ -557,7 +557,7 @@ export function LaunchFastView() {
 }`}</Sample>
         <div className="prose prose-after">
           <p>
-            On macOS the thread makes the wgpu instance, adapter and device, then builds the uber pipeline, loading the
+            On macOS the thread makes the instance, adapter and device, then builds the uber pipeline, loading the
             precompiled shader described below. The first window or overlay opened at launch takes the result, and
             waits if the thread is still working. Rune's run functions call it too, but only once they start the event
             loop, so calling it yourself in the first line of <code>main</code> gains the time your own setup takes
@@ -566,10 +566,16 @@ export function LaunchFastView() {
           <ul>
             <li>Calling it twice does nothing the second time.</li>
             <li>
-              An app that draws with <code>GpuBackend::Metal</code> calls{" "}
-              <code>rune::prewarm_gpu_on(GpuBackend::Metal)</code> instead. It chooses the backend, then starts the
-              thread, so the work doesn't start on wgpu and start over when <code>App::gpu_backend</code> runs; that
-              call afterwards changes nothing.
+              It starts on the backend a Mac app draws with by default: Rune's own Metal backend, from the{" "}
+              <code>metal-backend</code> feature, which is on by default. An app built with{" "}
+              <code>default-features = false</code> draws with wgpu unless it adds the feature.
+            </li>
+            <li>
+              An app that opts out with <code>App::gpu_backend(GpuBackend::Wgpu)</code> calls{" "}
+              <code>rune::prewarm_gpu_on(GpuBackend::Wgpu)</code> instead. It chooses the backend, then starts the
+              thread, so the work doesn't start on the native backend and start over when{" "}
+              <code>App::gpu_backend</code> runs; that call afterwards changes nothing. <code>RUNE_GPU_BACKEND=wgpu</code>{" "}
+              or <code>=metal</code> overrides both without a rebuild.
             </li>
             <li>
               If the app opens no window at launch, the result is dropped and nothing stays in memory. A{" "}

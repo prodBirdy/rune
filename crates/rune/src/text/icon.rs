@@ -75,11 +75,23 @@ pub(super) fn rasterize_icon(icon: &Icon, px: u32, atlas: &mut Atlas) -> Rasteri
     if px == 0 {
         return Rasterized::Empty;
     }
+    if px + 4 > super::ATLAS_SIZE {
+        return Rasterized::Unplaced;
+    }
     let cov = icon_coverage(icon, px);
     if !cov.iter().any(|&c| c != 0) {
         return Rasterized::Empty;
     }
-    match atlas.put(px, px, &cov, 0, 0) {
+    // Pad by one transparent texel on every side so sub-pixel, scaled and turned quads can
+    // expand by a texel and filter out to zero without clipping or sampling a neighbour.
+    let stride = (px + 2) as usize;
+    let mut padded = vec![0u8; stride * stride];
+    for row in 0..px as usize {
+        let src = &cov[row * px as usize..(row + 1) * px as usize];
+        let dst = (row + 1) * stride + 1;
+        padded[dst..dst + px as usize].copy_from_slice(src);
+    }
+    match atlas.put(px + 2, px + 2, &padded, 0, 0) {
         Some(g) => Rasterized::Placed(g),
         None => Rasterized::Unplaced,
     }

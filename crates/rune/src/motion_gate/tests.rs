@@ -75,3 +75,121 @@ fn run_keeps_the_filtered_cells_in_order_and_flags_one_that_recorded_nothing() {
     assert!(cells[2].skipped && !cells[0].skipped);
     assert_eq!(report(&cells, &[], false, 0.0).failing, 1);
 }
+
+struct Feed {
+    polls_change: bool,
+}
+
+fn feed(_: &Feed, _: &mut Cx<Feed>) -> El {
+    let rows = (0..40).fold(col().w_full(), |c, i| c.child(el().key(format!("row{i}")).w_full().h(40.0).fill(oklch(0.3, 0.02, 250.0))));
+    col().w_full().h_full().child(col().key("feed").w_full().h(300.0).scroll(crate::ScrollSpec { stick_bottom: false }).child(rows))
+}
+
+fn scroll_cell(polls_change: bool) -> Recording {
+    let mut rt = Runtime::new(Feed { polls_change }, feed, (400.0, 300.0), Env::new(true, 1.0));
+    rt.poll = Some(|s, _, _| s.polls_change);
+    let mut r = Run::new(rt, 120.0);
+    r.idle(0.5);
+    r.step();
+    for _ in 0..30 {
+        r.act("wheel", |rt| rt.wheel(200.0, 150.0, -12.0));
+    }
+    r.play(0.5);
+    r.rec
+}
+
+#[test]
+fn an_app_that_runs_its_view_through_a_scroll_fails_the_gate() {
+    let still = scroll_cell(false);
+    assert!(!kinds(&still).contains(&"scroll-commit"), "{:?}", check(&still));
+    let busy = scroll_cell(true);
+    let f: Vec<_> = check(&busy).into_iter().filter(|f| f.kind == "scroll-commit").collect();
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert!(f[0].detail.contains("(poll)"), "it names the cause: {}", f[0].detail);
+}
+
+/// Rows in a list drawn at 1.6×, each gliding on `spring` when the first drops by `drop`.
+#[derive(Clone, Copy)]
+struct Zoomed {
+    drop: f32,
+    spring: Spring,
+    down: bool,
+}
+
+fn zoomed(s: &Zoomed, _: &mut Cx<Zoomed>) -> El {
+    let ink = oklch(0.6, 0.15, 25.0);
+    let rows = (0..30).fold(col().key("rows").w_full(), |c, i| {
+        let row = el().key(format!("row{i}")).w_full().h(40.0).fill(ink).motion(s.spring);
+        c.child(if i == 0 && s.down { row.mt(s.drop) } else { row })
+    });
+    col().key("zoom").w_full().h_full().scale(1.6)
+        .child(col().key("feed").w_full().h_full().scroll(crate::ScrollSpec { stick_bottom: false }).child(rows))
+}
+
+fn zoomed_cell(drop: f32, spring: Spring) -> Recording {
+    let mut r = Run::new(Runtime::new(Zoomed { drop, spring, down: false }, zoomed, (600.0, 600.0), Env::new(true, 1.0)), 120.0);
+    r.rt.update(|_, tx| tx.scroll_to_instant("feed", 0.0, 200.0));
+    r.idle(0.5);
+    r.step();
+    // Data arriving, not a hand: an input would excuse a path that turns.
+    r.rt.update(|s, tx| { s.down = true; tx.scroll_to("feed", 0.0, 400.0); });
+    r.play(1.0);
+    r.rec
+}
+
+#[test]
+fn motion_inside_a_zoomed_scroll_is_judged_against_the_scroll() {
+    // A glide carries the rows up 200 pt, 320 pt on screen, while they glide 60 pt down the
+    // list: on screen they only rise, and against the list they only move down. Taking the
+    // scroll back at the list's own scale, not the window's, turns that into a dip and climb.
+    let paths = |rec: &Recording, kinds: &[&str]| -> Vec<String> {
+        check(rec).into_iter().filter(|f| kinds.contains(&f.kind)).map(|f| f.to_string()).collect()
+    };
+    let glide = zoomed_cell(60.0, Spring::new(0.2, 0.0));
+    let row = glide.tracks.iter().find(|t| t.path.ends_with("row12")).unwrap();
+    assert!(row.frames.windows(2).all(|w| w[1].1.rect[1] <= w[0].1.rect[1] + 0.01), "on screen it only rises");
+    let turns = paths(&glide, &["reversal", "jiggle", "overshoot"]);
+    assert!(turns.is_empty(), "{turns:#?}");
+    // A row that overshoots its place in the list still does, the scroll subtracted.
+    let wobble = zoomed_cell(60.0, Spring::new(0.3, 0.5));
+    let turns = paths(&wobble, &["reversal", "jiggle", "overshoot"]);
+    assert!(turns.iter().any(|f| f.contains("row12")), "{turns:#?}");
+}
+
+/// A 300 pt list whose first row starts just under the viewport, below 300 pt of padding.
+fn padded(_: &(), _: &mut Cx<()>) -> El {
+    let rows = (0..20).fold(col().key("rows").w_full().pt(300.0), |c, i| c.child(el().key(format!("row{i}")).w_full().h(40.0).fill(oklch(0.3, 0.02, 250.0))));
+    col().w_full().h_full().child(col().key("list").w_full().h(300.0).scroll(crate::ScrollSpec { stick_bottom: false }).child(rows))
+}
+
+/// The jumps, jerks and steps `scroll` makes in the padded list, as the gate reports them.
+fn padded_jumps(scroll: fn(&mut Run<()>)) -> Vec<String> {
+    let mut r = Run::new(Runtime::new((), padded, (400.0, 400.0), Env::new(true, 1.0)), 120.0);
+    r.idle(0.5);
+    r.step();
+    scroll(&mut r);
+    r.play(1.0);
+    r.finish().into_iter().filter(|f| ["jump", "offset-jump", "jerk", "appear-then-jump"].contains(&f.kind)).map(|f| f.to_string()).collect()
+}
+
+#[test]
+fn a_scroll_that_teleports_a_row_into_view_with_no_input_jumps() {
+    // The offset jumps 40 pt with no hand on the app: the first row, just off screen, pops
+    // 40 pt into view, though nothing showed on both frames to be seen moving.
+    let instant = padded_jumps(|r| {
+        r.rt.update(|_, tx| tx.scroll_to_instant("list", 0.0, 40.0));
+        r.step();
+    });
+    assert_eq!(instant.len(), 1, "{instant:#?}");
+    assert!(instant[0].starts_with("jump") && instant[0].contains("rows"), "{instant:#?}");
+    // A wheel, a scroll a tap asks for and a glide bring it in as you'd expect.
+    let wheel = padded_jumps(|r| for _ in 0..4 { r.act("wheel", |rt| rt.wheel(200.0, 150.0, -10.0)) });
+    assert!(wheel.is_empty(), "{wheel:#?}");
+    let tapped = padded_jumps(|r| r.act("tap", |rt| rt.update(|_, tx| tx.scroll_to_instant("list", 0.0, 40.0))));
+    assert!(tapped.is_empty(), "{tapped:#?}");
+    let glide = padded_jumps(|r| {
+        r.rt.update(|_, tx| tx.scroll_to("list", 0.0, 40.0));
+        r.step();
+    });
+    assert!(glide.is_empty(), "{glide:#?}");
+}

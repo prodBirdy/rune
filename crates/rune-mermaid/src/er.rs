@@ -167,7 +167,7 @@ impl Parser {
         let to = self.entity(b)?;
         self.budget()?;
         let label = label.filter(|l| !l.is_empty());
-        self.d.edges.push(Edge { from, to, label, line, start, end, minlen: 1, style: EdgeStyle::default() });
+        self.d.edges.push(Edge { from, to, label, line, start, end, minlen: 1, style: EdgeStyle::default(), on_cluster: [None; 2] });
         Some(())
     }
 

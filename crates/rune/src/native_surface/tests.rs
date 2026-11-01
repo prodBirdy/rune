@@ -1,7 +1,7 @@
 use super::*;
 use crate::render::{Gpu, NO_CLIP, OFFSCREEN_FORMAT, Offscreen};
 
-fn draw(surface: &NativeSurface, rect: [f32; 4]) -> SurfaceDraw {
+pub(super) fn draw(surface: &NativeSurface, rect: [f32; 4]) -> SurfaceDraw {
     SurfaceDraw {
         surface: surface.clone(),
         fit: SurfaceFit::Fit,
@@ -13,7 +13,7 @@ fn draw(surface: &NativeSurface, rect: [f32; 4]) -> SurfaceDraw {
         opacity: 1.0,
     }
 }
-fn render(gpu: &Gpu, renderer: &mut SurfaceRenderer, draws: &[SurfaceDraw], size: (u32, u32)) -> Vec<u8> {
+pub(super) fn render(gpu: &Gpu, renderer: &mut SurfaceRenderer, draws: &[SurfaceDraw], size: (u32, u32)) -> Vec<u8> {
     let (completed, completion) = std::sync::mpsc::channel();
     for d in draws {
         let completed = completed.clone();
@@ -522,7 +522,7 @@ fn video_gpu_colour_sharpness_geometry_and_lifetime_on(gpu: Gpu) {
 }
 
 /// BGRA whose every pixel differs, so any column swap shows. Returns the source and its RGBA readback.
-fn bgra_ramp(width: u32, height: u32) -> (ByteFrame, Vec<[u8; 4]>) {
+pub(super) fn bgra_ramp(width: u32, height: u32) -> (ByteFrame, Vec<[u8; 4]>) {
     let mut planes = Vec::new();
     let mut rgba = Vec::new();
     for y in 0..height {
@@ -534,7 +534,7 @@ fn bgra_ramp(width: u32, height: u32) -> (ByteFrame, Vec<[u8; 4]>) {
     }
     (ByteFrame { width, height, format: Format::Bgra, color: ColorInfo::default(), planes: [planes, vec![]] }, rgba)
 }
-fn pixel(p: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+pub(super) fn pixel(p: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
     let i = ((y * width + x) * 4) as usize;
     p[i..i + 4].try_into().unwrap()
 }

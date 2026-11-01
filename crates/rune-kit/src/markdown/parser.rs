@@ -25,7 +25,7 @@ impl SpanMap {
         self.0.push((src, out));
     }
 
-    fn truncate_out(&mut self, len: usize) {
+    pub(super) fn truncate_out(&mut self, len: usize) {
         self.0.retain_mut(|(src, out)| {
             if out.start >= len {
                 return false;
@@ -116,7 +116,32 @@ pub(super) struct Builder {
     autolink: bool,
     image_starts: Vec<usize>,
     image_ranges: Vec<(usize, usize)>,
+    tail: Tail,
 }
+
+/// What the source ends inside, from the last block-level start the walk met.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Tail {
+    None,
+    /// A code or HTML block: its text is literal.
+    Code,
+    /// Inline text from this source byte on (a paragraph, a tight list item, a heading or a
+    /// table cell).
+    Inline(usize, Scope),
+}
+
+/// How far an inline run can reach.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Scope {
+    /// Across lines, until a blank one.
+    Para,
+    /// To the end of its line (a heading).
+    Line,
+    /// To the next `|` or the end of its line.
+    Cell,
+}
+
+pub(super) type ParsedDoc = (Vec<Block>, Vec<Source>, Vec<Option<(bool, usize)>>, Vec<Cut>, Vec<usize>, Vec<BlockMap>);
 
 /// Where a top-level block starts: the start of its first line, and how many top-level blocks,
 /// [`Source`]s and list items come before it.
@@ -128,8 +153,9 @@ pub(super) struct Cut {
     pub(super) tasks: usize,
 }
 
-/// What colours a [`Block::Code`], one per block in document order (the order the renderer
-/// meets them). Kept beside the blocks so `Block` keeps its shape.
+/// What colours a [`Block::Code`] and which lines of a [`Block::Mermaid`] draw, one per block in
+/// document order (the order the renderer meets them). Kept beside the blocks so `Block` keeps
+/// its shape.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Source {
     /// The fence's language as written (its info string's first word), if it names one.
@@ -137,8 +163,11 @@ pub(super) struct Source {
     /// The code's length, to check this belongs to the block it is matched with.
     pub(super) len: usize,
     /// How many leading bytes get colour: all of them, or while an unclosed fence streams in,
-    /// the complete lines (the line still arriving draws plain until its newline).
+    /// the complete lines (the line still arriving draws plain until its newline). A diagram
+    /// draws from these lines alone.
     pub(super) coloured: usize,
+    /// The fence's closing line hasn't arrived.
+    pub(super) open: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -197,14 +226,14 @@ impl Builder {
         }
         map.truncate_out(text.len());
         let block = code_block(text, &fence);
-        if let Block::Code(code) = &block {
+        if let Block::Code(code) | Block::Mermaid(code) = &block {
             let (lang, closed) = match fence {
                 Fence::Plain(lang, closed) => (lang, closed),
-                // A mermaid fence still arriving.
-                _ => (Some("mermaid".into()), false),
+                Fence::Mermaid(closed) => (Some("mermaid".into()), closed),
+                Fence::Diff => (None, true),
             };
             let coloured = if closed || line_ended { code.len() } else { code.rfind('\n').unwrap_or(0) };
-            self.sources.push(Source { lang, len: code.len(), coloured });
+            self.sources.push(Source { lang, len: code.len(), coloured, open: !closed });
         }
         self.push(block, BlockMap::Code(map));
     }
@@ -353,7 +382,12 @@ pub fn parse(src: &str) -> Vec<Block> {
     parse_doc(src, true).0
 }
 
-pub(super) fn parse_doc(src: &str, autolink: bool) -> (Vec<Block>, Vec<Source>, Vec<Option<(bool, usize)>>, Vec<Cut>, Vec<usize>, Vec<BlockMap>) {
+pub(super) fn parse_doc(src: &str, autolink: bool) -> ParsedDoc {
+    parse_doc_tail(src, autolink).0
+}
+
+/// [`parse_doc`], and what the source ends inside.
+pub(super) fn parse_doc_tail(src: &str, autolink: bool) -> (ParsedDoc, Tail) {
     let mut b = Builder {
         stack: vec![(Container::Root, Vec::new(), Vec::new())],
         inline: None,
@@ -367,6 +401,7 @@ pub(super) fn parse_doc(src: &str, autolink: bool) -> (Vec<Block>, Vec<Source>, 
         autolink,
         image_starts: Vec::new(),
         image_ranges: Vec::new(),
+        tail: Tail::None,
     };
     let opts = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
     for (ev, range) in Parser::new_ext(src, opts).into_offset_iter() {
@@ -382,6 +417,15 @@ pub(super) fn parse_doc(src: &str, autolink: bool) -> (Vec<Block>, Vec<Source>, 
             b.root_start = at;
             b.cuts.push(Cut { at, blocks: b.stack[0].1.len(), sources: b.sources.len(), tasks: b.tasks.len() });
         }
+        b.tail = match &ev {
+            Event::Start(Tag::Paragraph | Tag::Item) => Tail::Inline(range.start, Scope::Para),
+            Event::Start(Tag::Heading { .. }) => Tail::Inline(range.start, Scope::Line),
+            // A row short of cells is padded with empty ones after its last.
+            Event::Start(Tag::TableCell) if !range.is_empty() => Tail::Inline(range.start, Scope::Cell),
+            Event::Start(Tag::CodeBlock(_) | Tag::HtmlBlock) => Tail::Code,
+            Event::Start(Tag::Table(_)) | Event::Rule => Tail::None,
+            _ => b.tail,
+        };
         match ev {
             Event::Start(tag) => match tag {
                 Tag::Paragraph => {
@@ -568,14 +612,14 @@ pub(super) fn parse_doc(src: &str, autolink: bool) -> (Vec<Block>, Vec<Source>, 
         *blocks.last_mut().unwrap() = Block::Table(t);
         *maps.last_mut().unwrap() = map;
     }
-    (blocks, b.sources, b.tasks, b.cuts, b.block_starts, maps)
+    ((blocks, b.sources, b.tasks, b.cuts, b.block_starts, maps), b.tail)
 }
 
 fn code_block(text: String, fence: &Fence) -> Block {
     match fence {
-        Fence::Plain(..) | Fence::Mermaid(false) => Block::Code(text),
+        Fence::Plain(..) => Block::Code(text),
         Fence::Diff => Block::Diff(text),
-        Fence::Mermaid(true) => Block::Mermaid(text),
+        Fence::Mermaid(_) => Block::Mermaid(text),
     }
 }
 

@@ -11,6 +11,7 @@ use objc2_metal::{
 use wgpu::custom::*;
 use wgpu::naga;
 
+use super::derive::{self, Use};
 use super::layout::{LayoutRaw, PipelineLayout};
 use super::resource::pixel_format;
 use super::shader::{Stage, compile};
@@ -67,7 +68,7 @@ fn vertex_format(format: wgpu::VertexFormat) -> MTLVertexFormat {
         V::Uint16x4 => M::UShort4,
         V::Snorm16x2 => M::Short2Normalized,
         V::Snorm16x4 => M::Short4Normalized,
-        other => unimplemented!("RUNE_GPU_BACKEND=metal: vertex format {other:?}"),
+        other => super::unsupported!("vertex format {other:?}"),
     }
 }
 
@@ -159,9 +160,15 @@ fn vertex_descriptor(buffers: &[Option<wgpu::VertexBufferLayout<'_>>]) -> Option
 
 pub(super) fn create(shared: &Shared, desc: &wgpu::RenderPipelineDescriptor<'_>) -> RenderPipeline {
     let label = desc.label.unwrap_or("pipeline");
-    let layout = desc.layout.expect("RUNE_GPU_BACKEND=metal: pipelines need an explicit layout")
-        .as_custom::<PipelineLayout>().expect("a Metal pipeline layout").raw.clone();
-    assert!(desc.depth_stencil.is_none(), "RUNE_GPU_BACKEND=metal: depth and stencil");
+    let layout = match desc.layout {
+        Some(layout) => layout.as_custom::<PipelineLayout>().expect("a Metal pipeline layout").raw.clone(),
+        None => {
+            let vertex = Use { module: desc.vertex.module, entry: desc.vertex.entry_point, kind: naga::ShaderStage::Vertex };
+            let fragment = desc.fragment.as_ref().map(|f| Use { module: f.module, entry: f.entry_point, kind: naga::ShaderStage::Fragment });
+            derive::layout(label, &[Some(vertex), fragment].into_iter().flatten().collect::<Vec<_>>()).raw
+        }
+    };
+    if desc.depth_stencil.is_some() { super::unsupported!("depth and stencil") }
     let (class, primitive) = topology(desc.primitive.topology);
     let points = class == MTLPrimitiveTopologyClass::Point;
     let d = MTLRenderPipelineDescriptor::new();
@@ -176,7 +183,7 @@ pub(super) fn create(shared: &Shared, desc: &wgpu::RenderPipelineDescriptor<'_>)
         let fs = compile(shared, &stage, &layout.stages[1], points).unwrap_or_else(|e| panic!("{label}: {e}"));
         d.setFragmentFunction(Some(&fs.function));
         sized[1] = fs.sized;
-        assert!(fragment.targets.len() <= 4, "RUNE_GPU_BACKEND=metal: more than four color targets");
+        if fragment.targets.len() > 4 { super::unsupported!("more than four color targets") }
         for (i, target) in fragment.targets.iter().enumerate() {
             // SAFETY: at most four attachments, checked above.
             let attachment = unsafe { d.colorAttachments().objectAtIndexedSubscript(i) };
@@ -223,7 +230,7 @@ pub(super) fn create(shared: &Shared, desc: &wgpu::RenderPipelineDescriptor<'_>)
 }
 
 impl RenderPipelineInterface for RenderPipeline {
-    fn get_bind_group_layout(&self, _: u32) -> DispatchBindGroupLayout {
-        unimplemented!("RUNE_GPU_BACKEND=metal: layouts derived from a pipeline")
+    fn get_bind_group_layout(&self, index: u32) -> DispatchBindGroupLayout {
+        self.raw.layout.group(index)
     }
 }

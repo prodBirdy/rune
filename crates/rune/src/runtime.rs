@@ -85,6 +85,8 @@ mod blend;
 mod commit_watch;
 #[path = "runtime/commit/why.rs"]
 mod commit_why;
+#[path = "runtime/interaction.rs"]
+mod interaction_timing;
 #[path = "runtime/drag_out_host.rs"]
 mod drag_out_host;
 #[path = "runtime/paint/exit_mask.rs"]
@@ -97,7 +99,7 @@ mod key_index;
 mod system_settings;
 #[path = "runtime/commit/prune.rs"]
 mod prune;
-pub(crate) use blend::{glyph, glyph_uv_page, premul};
+pub(crate) use blend::{glyph, icon_inst, premul};
 
 #[path = "runtime/input/focus.rs"]
 mod focus;
@@ -179,6 +181,8 @@ mod secondary;
 mod app_ime;
 #[path = "runtime/input/press_clicks.rs"]
 mod press_clicks;
+#[path = "runtime/input/titlebar.rs"]
+mod titlebar;
 #[path = "runtime/window_requests.rs"]
 mod window_requests;
 #[path = "runtime/paint/tracks.rs"]
@@ -229,6 +233,9 @@ mod on_key_tests;
 #[cfg(test)]
 #[path = "live_only_tests.rs"]
 mod live_only_tests;
+#[cfg(test)]
+#[path = "runtime/live_check_tests.rs"]
+mod live_check_tests;
 #[path = "runtime/selection/select_all.rs"]
 mod select_all;
 #[cfg(test)]
@@ -275,6 +282,8 @@ mod unseen_presence;
 mod row_reorder;
 #[path = "runtime/motion/growth_rows.rs"]
 mod growth_rows;
+#[path = "runtime/motion/fold_hold.rs"]
+mod fold_hold;
 #[path = "runtime/motion/content_slide.rs"]
 mod content_slide;
 mod elements;
@@ -285,6 +294,8 @@ use cache_layer::{ActiveCache, NodeCache};
 #[path = "runtime/paint/helpers.rs"]
 mod paint_helpers;
 use paint_helpers::*;
+#[path = "runtime/paint/content.rs"]
+mod paint_content;
 #[path = "runtime/input/hit.rs"]
 mod hit;
 #[path = "runtime/paint/build.rs"]
@@ -502,6 +513,10 @@ pub struct Runtime<S: 'static> {
     row_dy: Vec<f32>,
     row_h: Vec<f32>,
     row_mask: Vec<f32>,
+    /// Growth rows whose contents draw lifted this frame (`GrowTrack::hide_above`): index, points.
+    row_lifts: Vec<(usize, f32)>,
+    /// The header each lifted fold shuts under, by the fold's id, which draws where it's laid out.
+    fold_headers: HashMap<NodeId, String>,
     grow_acc: f32,
     caught_up: f32,
     slack_dt: f32,
@@ -676,7 +691,7 @@ pub struct Runtime<S: 'static> {
     live_only_check: bool,
     /// The live-only event this frame's commit checks: its handler, and what the view had built.
     #[cfg(debug_assertions)]
-    live_check: Option<(String, u64)>,
+    live_check: Option<(String, live_check::ViewPrint)>,
     /// Live-only events checked (and so committed) so far.
     #[cfg(debug_assertions)]
     live_checks: u64,
@@ -696,8 +711,6 @@ pub struct Runtime<S: 'static> {
     pub ambient: Option<f32>,
     /// Where (window points) the current press started.
     press_at: (f32, f32),
-    /// The last press on a window drag region: when (clock seconds) and where.
-    last_drag_press: Option<(f64, f32, f32)>,
     /// The first of a possible double press: the element, its down time and point.
     last_press: Option<(String, f64, f32, f32)>,
     /// The press now held is the second of a double press.
@@ -709,7 +722,7 @@ pub struct Runtime<S: 'static> {
     press_moved: bool,
     /// A scroll under the held press cancelled it ([`Runtime::scroll_cancels_press`]).
     press_cancelled: bool,
-    titlebar_action: Option<TitlebarAction>,
+    titlebar: titlebar::Titlebar,
     /// Two presses closer than this (seconds) are a double press: the system setting on macOS
     /// and Windows, 0.5 elsewhere and headless.
     pub double_click_interval: f64,
@@ -868,6 +881,8 @@ impl<S: 'static> Runtime<S> {
             row_dy: Vec::new(),
             row_h: Vec::new(),
             row_mask: Vec::new(),
+            row_lifts: Vec::new(),
+            fold_headers: HashMap::default(),
             grow_acc: 0.0,
             caught_up: 0.0,
             slack_dt: 0.0,
@@ -977,14 +992,13 @@ impl<S: 'static> Runtime<S> {
             key_warnings: None,
             ambient: None,
             press_at: (0.0, 0.0),
-            last_drag_press: None,
             last_press: None,
             double_armed: false,
             press_clicks: Default::default(),
             press_down_t: 0.0,
             press_moved: false,
             press_cancelled: false,
-            titlebar_action: None,
+            titlebar: Default::default(),
             double_click_interval: 0.5,
             os_drag: true,
             drag_out_armed: false,

@@ -1,0 +1,16 @@
+[
+  {"t":0.2,"type":"tap","key":"stream-more"},
+  {"t":0.45,"type":"tap","key":"stream-more"},
+  {"t":0.7,"type":"tap","key":"stream-more"},
+  {"t":0.95,"type":"tap","key":"stream-more"},
+  {"t":1.2,"type":"tap","key":"stream-more"},
+  {"t":1.45,"type":"tap","key":"stream-more"},
+  {"t":1.7,"type":"tap","key":"stream-more"},
+  {"t":1.95,"type":"tap","key":"stream-more"},
+  {"t":2.2,"type":"tap","key":"stream-more"},
+  {"t":2.45,"type":"tap","key":"stream-more"},
+  {"t":2.7,"type":"tap","key":"stream-more"},
+  {"t":2.95,"type":"tap","key":"stream-more"},
+  {"t":3.2,"type":"tap","key":"stream-more"},
+  {"t":3.45,"type":"tap","key":"stream-more"}
+]

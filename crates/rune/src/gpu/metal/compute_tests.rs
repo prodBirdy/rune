@@ -6,7 +6,9 @@ fn wgpu_metal() -> (wgpu::Device, wgpu::Queue) {
     descriptor.backends = wgpu::Backends::METAL;
     let instance = wgpu::Instance::new(descriptor);
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
-    pollster::block_on(adapter.request_device(&Default::default())).unwrap()
+    // The iOS simulator passes fewer inter-stage variables than wgpu's defaults ask for.
+    let desc = wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..Default::default() };
+    pollster::block_on(adapter.request_device(&desc)).unwrap()
 }
 
 fn timed() -> (wgpu::Device, wgpu::Queue) {
@@ -171,6 +173,7 @@ fn new_textures_read_as_zero() {
 }
 
 #[test]
+#[cfg_attr(target_abi = "sim", ignore = "the iOS simulator samples no GPU counters")]
 fn passes_sample_timestamps_at_their_boundaries() {
     let (device, queue) = timed();
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(r#"

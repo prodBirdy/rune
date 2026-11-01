@@ -190,23 +190,27 @@ impl TextSystem {
         }
     }
 
-    /// Moves the glyphs placed from here on down by `glide` device px (within half a pixel),
-    /// in [`GLIDE_PHASES`] steps a pixel. Pixel snapping glides a moving box between pixels;
-    /// its text lays out from the box's nearest whole pixel and passes the rest here, so the
-    /// words move with the box instead of a whole pixel at a time. 0, the default, places
-    /// glyphs as text at rest.
-    pub(crate) fn set_glide(&mut self, glide: f32) {
+    /// Moves the glyphs placed from here on by `glide` device px (`[x, y]`, each within half a
+    /// pixel), in at least [`GLIDE_PHASES`] steps a pixel on any gliding axis. Pixel snapping
+    /// glides a moving box between pixels; its text lays out from the box's nearest whole pixel on
+    /// `y` and passes the rest here, so the words move with the box instead of a pixel at a time.
+    /// `[0.0; 2]`, the default, places glyphs as text at rest.
+    pub(crate) fn set_glide(&mut self, glide: [f32; 2]) {
         self.glide = glide;
     }
 }
 
-/// Where a glyph with its pen at `at` draws at `ppem` device px, moved down by `glide`: its
+/// Where a glyph with its resting pen at `at` draws at `ppem` device px, gliding by `glide`: its
 /// quad's whole-pixel pen and its x phase (sixtieths, [`coretext_match::PHASES`]) and y phase
-/// ([`GLIDE_PHASES`] a pixel). With no glide the y phase is 0 and the pen rounds as at rest.
-pub(super) fn place(at: [f32; 2], ppem: f32, glide: f32) -> ([f32; 2], [u8; 2]) {
-    let (fx, subpx) = coretext_match::glyph_x(at[0], ppem);
+/// ([`GLIDE_PHASES`] a pixel). Adding the quantised glide on top of the resting pen keeps each
+/// glyph continuous at glide start/end and visits at most [`GLIDE_PHASES`] phases per axis.
+pub(super) fn place(at: [f32; 2], ppem: f32, glide: [f32; 2]) -> ([f32; 2], [u8; 2]) {
+    let (rx, r_subpx) = coretext_match::glyph_x(at[0], ppem);
     let n = GLIDE_PHASES as f32;
-    let y = at[1].round() * n + (glide * n).round();
+    let gx = rx * coretext_match::PHASES + r_subpx as f32 + (glide[0] * n).round() * (coretext_match::PHASES / n);
+    let fx = (gx / coretext_match::PHASES).floor();
+    let subpx = (gx - fx * coretext_match::PHASES) as u8;
+    let y = at[1].round() * n + (glide[1] * n).round();
     let fy = (y / n).floor();
     ([fx, fy], [subpx, (y - fy * n) as u8])
 }

@@ -2,8 +2,9 @@
 
 use rune::{Align, Color, TextStyle};
 
-use super::canvas::{Canvas, Measured, Scene, arrowhead, ellipse, measure, over_color, rounded_rect};
+use super::canvas::{Canvas, Measured, Scene, arrowhead, ellipse, measure, rounded_rect};
 use super::sequence::{Event, Kind, NotePos, Sequence, Tip};
+use super::parts::{Kind as PartKind, Part};
 use super::shape::{self, NodeShape};
 use super::{DiagramStyle, adapt_fill};
 
@@ -94,6 +95,8 @@ pub(crate) fn draw(s: &Sequence, paint: &DiagramStyle) -> Option<Scene> {
         let d = active[i].len();
         if let Some(top) = active[i].pop() {
             let x = cx[i] + (d - 1) as f32 * 4.0;
+            let k = bars.marks.len();
+            bars.part(Some(Part::Key(PartKind::Frame, format!("bar{k}"))));
             bars.shape(rounded_rect(x - BAR / 2.0, top, x + BAR / 2.0, y.max(top + 8.0), 1.0), paint.node_fill, paint.node_border, 1.0);
         }
     };
@@ -106,6 +109,7 @@ pub(crate) fn draw(s: &Sequence, paint: &DiagramStyle) -> Option<Scene> {
     for (i, e) in s.events.iter().enumerate() {
         match e {
             Event::Message(m) => {
+                front.part(Some(Part::Key(PartKind::Edge, format!("m{i}"))));
                 let t = texts[i].as_ref().expect("messages are measured");
                 if m.activate {
                     active[m.to].push(y + t.size[1] + 6.0);
@@ -113,7 +117,7 @@ pub(crate) fn draw(s: &Sequence, paint: &DiagramStyle) -> Option<Scene> {
                 let line_y;
                 if m.from == m.to {
                     let x = edge_x(&active, m.from, true);
-                    front.label_at(t, [x + 8.0, y], small, paint.text, Align::Start);
+                    front.label_at(t, [x + 8.0, y], small, paint.muted, Align::Start);
                     line_y = y + t.size[1] + 6.0;
                     let pts = vec![[x, line_y], [x + 30.0, line_y], [x + 30.0, line_y + 18.0], [x + 2.0 + tip_len(m.tip), line_y + 18.0]];
                     stroke(&mut front, pts, m.dotted, paint);
@@ -127,7 +131,7 @@ pub(crate) fn draw(s: &Sequence, paint: &DiagramStyle) -> Option<Scene> {
                     let dir = if right { 1.0 } else { -1.0 };
                     let mid = (sx + ex) / 2.0;
                     let has_text = !t.text.is_empty();
-                    front.label(t, [mid, y + t.size[1] / 2.0], small, paint.text, Align::Center);
+                    front.label(t, [mid, y + t.size[1] / 2.0], small, paint.muted, Align::Center);
                     line_y = y + if has_text { t.size[1] + 6.0 } else { 4.0 };
                     let a = if m.both { sx + dir * tip_len(m.tip) } else { sx };
                     stroke(&mut front, vec![[a, line_y], [ex - dir * tip_len(m.tip), line_y]], m.dotted, paint);
@@ -162,6 +166,7 @@ pub(crate) fn draw(s: &Sequence, paint: &DiagramStyle) -> Option<Scene> {
             Event::Create(a) => {
                 let [w, h] = boxes[*a];
                 let top = y;
+                tops.part(Some(Part::Key(PartKind::Node, format!("p{a}"))));
                 head(&mut tops, s.participants[*a].kind, &heads[*a], [cx[*a], top], [w, h], paint);
                 starts[*a] = top + h;
                 touch(&mut frames, cx[*a] - w / 2.0, cx[*a] + w / 2.0);
@@ -183,6 +188,7 @@ pub(crate) fn draw(s: &Sequence, paint: &DiagramStyle) -> Option<Scene> {
                 };
                 let h = t.size[1] + 14.0;
                 y += 2.0;
+                front.part(Some(Part::Key(PartKind::Node, format!("note{i}"))));
                 front.shape(rounded_rect(x0, y, x1, y + h, 2.0), paint.note_fill, paint.note_border, 1.0);
                 front.label(t, [(x0 + x1) / 2.0, y + h / 2.0], small, paint.text, Align::Center);
                 touch(&mut frames, x0, x1);
@@ -214,6 +220,9 @@ pub(crate) fn draw(s: &Sequence, paint: &DiagramStyle) -> Option<Scene> {
                 let tab_w = f.kind.as_ref().map_or(0.0, |k| k.size[0] + 18.0);
                 let x1 = (f.x[1] + 12.0).max(x0 + tab_w + f.label.size[0] + 20.0);
                 let bottom = y - 4.0;
+                let key = format!("frame{}", back.marks.len());
+                back.part(Some(Part::Key(PartKind::Frame, key.clone())));
+                tabs.part(Some(Part::Key(PartKind::Frame, key)));
                 if let Some(kind) = &f.kind {
                     let th = kind.size[1].max(f.label.size[1]) + 6.0;
                     back.stroke(vec![[x0, f.top], [x1, f.top], [x1, bottom], [x0, bottom]], true, 1.0, paint.node_border);
@@ -242,7 +251,7 @@ pub(crate) fn draw(s: &Sequence, paint: &DiagramStyle) -> Option<Scene> {
     }
 
     // Participant `box` columns behind everything else.
-    let box_border = over_color(paint.node_border.alpha(0.45), paint.surface_border);
+    let box_border = crate::canvas::group_border(paint);
     for (b_idx, b) in s.boxes.iter().enumerate() {
         let members: Vec<usize> = (0..n).filter(|&i| s.participants[i].group == Some(b_idx)).collect();
         let (Some(&first), Some(&last)) = (members.first(), members.last()) else { continue };
@@ -255,6 +264,7 @@ pub(crate) fn draw(s: &Sequence, paint: &DiagramStyle) -> Option<Scene> {
             x1 = mid + title.size[0] / 2.0 + 10.0;
         }
         let fill = b.color.map_or(paint.cluster_fill, |col| adapt_fill(paint.surface, col, 0.035, 0.03));
+        groups_bg.part(Some(Part::Key(PartKind::Frame, format!("box{b_idx}"))));
         groups_bg.shape(rounded_rect(x0, 0.0, x1, end + max_head_h + 10.0, 6.0), fill, box_border, 1.0);
         groups_bg.label(title, [(x0 + x1) / 2.0, 7.0 + title.size[1] / 2.0], bold, paint.muted, Align::Center);
     }
@@ -263,11 +273,14 @@ pub(crate) fn draw(s: &Sequence, paint: &DiagramStyle) -> Option<Scene> {
     for (i, p) in s.participants.iter().enumerate() {
         let size = boxes[i];
         let stop = ends[i].unwrap_or(end);
+        lifelines.part(Some(Part::Key(PartKind::Frame, format!("life{i}"))));
         lifelines.stroke(vec![[cx[i], starts[i]], [cx[i], stop]], false, 1.0, paint.node_border);
         if !created[i] {
+            tops.part(Some(Part::Key(PartKind::Node, format!("p{i}"))));
             head(&mut tops, p.kind, &heads[i], [cx[i], top_h - size[1]], size, paint);
         }
         if ends[i].is_none() {
+            tops.part(Some(Part::Key(PartKind::Node, format!("p{i}.end"))));
             head(&mut tops, p.kind, &heads[i], [cx[i], end], size, paint);
         }
     }

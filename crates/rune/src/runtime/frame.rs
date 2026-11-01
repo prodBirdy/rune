@@ -2,12 +2,6 @@
 use super::*;
 
 impl<S: 'static> Runtime<S> {
-    /// A window drag or titlebar double-click requested by the press just delivered. The shell
-    /// must act on it before returning from that press event.
-    pub fn take_titlebar_action(&mut self) -> Option<TitlebarAction> {
-        self.titlebar_action.take()
-    }
-
     /// Clock seconds now: the wall clock in a window (input arrives between frames), the
     /// virtual clock headless.
     pub(super) fn now_clock(&self) -> f64 {
@@ -375,6 +369,7 @@ impl<S: 'static> Runtime<S> {
     pub(super) fn frame_step(&mut self, elapsed: f64, catch_up: f64, dt: f64) -> bool {
         // Each queued action runs with its own input's arrival time; nothing else has one.
         let _input = crate::input::time::scope(None);
+        self.interaction_frame_begins();
         let mut live_woke = self.take_live_wake();
         // Another window may have switched the font families since this one's last frame.
         self.follow_font_families();
@@ -471,11 +466,11 @@ impl<S: 'static> Runtime<S> {
                     if self.settle { tx.settle(); }
                     self.settled |= tx.settle;
                     #[cfg(debug_assertions)]
-                    let check = self.live_check.take().filter(|_| !ran_other && !self.dirty && !ran_layout);
+                    if ran_other || self.dirty || ran_layout { self.live_check = None; }
                     self.capture_keeps(&mut tx);
                     self.commit_for(&tx, std::mem::take(&mut why) | CommitWhy::ROUTE | if self.dirty { CommitWhy::DIRTY } else { 0 });
                     #[cfg(debug_assertions)]
-                    { self.compare_live_check(check); ran_other = false; }
+                    { let check = self.live_check.take(); self.compare_live_check(check); ran_other = false; }
                     self.apply_keeps();
                     ran = false;
                 }
@@ -506,14 +501,25 @@ impl<S: 'static> Runtime<S> {
         }
         // Once a frame, however often a drag moved the selection, and in time for this commit.
         for action in self.selection_changes() {
-            if self.run_action(action, &mut tx) { ran = true; why |= CommitWhy::INPUT; }
+            #[cfg(debug_assertions)]
+            let checks = self.live_checks;
+            let r = self.run_action(action, &mut tx);
+            #[cfg(debug_assertions)]
+            { ran_other |= r && checks == self.live_checks; }
+            if r { ran = true; why |= CommitWhy::INPUT; }
         }
         let mut open_urls = std::mem::take(&mut tx.open_urls);
         self.latch_requests(&mut tx);
         // A handler asked for a menu: the hover it takes ends in this commit, not a frame later.
         if self.release_pointer_for_popup() {
             for queued in std::mem::take(&mut self.queue) {
-                if !matches!(queued.action, Action::HoverChange(..)) { self.queue.push_queued(queued); } else if self.run_action(queued.action, &mut tx) { ran = true; why |= CommitWhy::INPUT; }
+                if !matches!(queued.action, Action::HoverChange(..)) { self.queue.push_queued(queued); continue; }
+                #[cfg(debug_assertions)]
+                let checks = self.live_checks;
+                let r = self.run_action(queued.action, &mut tx);
+                #[cfg(debug_assertions)]
+                { ran_other |= r && checks == self.live_checks; }
+                if r { ran = true; why |= CommitWhy::INPUT; }
             }
             open_urls.extend(std::mem::take(&mut tx.open_urls));
             self.latch_requests(&mut tx);
@@ -540,13 +546,13 @@ impl<S: 'static> Runtime<S> {
             self.settled = tx.settle;
             self.state_unchanged = !ran && !self.dirty && !ran_layout && !self.settle && self.commits > 0;
             #[cfg(debug_assertions)]
-            let check = self.live_check.take().filter(|_| !ran_other && !besides && !ran_layout && !read_moved);
+            if ran_other || besides || ran_layout || read_moved { self.live_check = None; }
             self.capture_keeps(&mut tx);
             let flag = |on: bool, bit: u16| if on { bit } else { 0 };
             self.commit_for(&tx, why | flag(self.dirty, CommitWhy::DIRTY) | flag(self.relayout, CommitWhy::RELAYOUT) | flag(self.settle, CommitWhy::SETTLE)
                 | flag(shifted, CommitWhy::VIRTUAL) | flag(ran_layout, CommitWhy::LAYOUT) | flag(read_moved, CommitWhy::READ));
             #[cfg(debug_assertions)]
-            self.compare_live_check(check);
+            { let check = self.live_check.take(); self.compare_live_check(check); }
             self.apply_keeps();
         }
         #[cfg(debug_assertions)]
@@ -617,6 +623,7 @@ impl<S: 'static> Runtime<S> {
         if filling { self.anim_sources |= AnimSource::VIRTUAL_FILL; }
         self.animating = (animating && self.time_scale > 0.0) || filling;
         self.idle_frame_ends();
+        self.interaction_built();
         if !open_urls.is_empty() { self.open_urls(open_urls); }
         self.animating
     }
@@ -705,6 +712,7 @@ impl<S: 'static> Runtime<S> {
             animating |= self.build();
         }
         self.finish_keeps();
+        animating |= self.write_drawn_rects();
         self.report_at_bottom();
         animating |= self.report_visible_rows();
         self.report_layout();

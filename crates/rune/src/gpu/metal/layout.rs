@@ -45,6 +45,16 @@ pub(crate) struct LayoutRaw {
     pub(super) bases: Vec<[Counts; 3]>,
     pub(super) stages: [msl::EntryPointResources; 3],
     pub(super) immediates: u32,
+    /// Each group's entries, for `get_bind_group_layout`.
+    groups: Vec<Arc<[wgpu::BindGroupLayoutEntry]>>,
+}
+
+impl LayoutRaw {
+    /// Group `index`'s layout, as a pipeline made with this layout hands it out.
+    pub(super) fn group(&self, index: u32) -> DispatchBindGroupLayout {
+        let entries = self.groups.get(index as usize).unwrap_or_else(|| panic!("no bind group {index} in the pipeline's layout")).clone();
+        DispatchBindGroupLayout::custom(BindGroupLayout { entries })
+    }
 }
 
 #[derive(Debug)]
@@ -105,7 +115,7 @@ fn target(ty: &wgpu::BindingType, counts: &mut Counts) -> msl::BindTarget {
             target.mutable = access != wgpu::StorageTextureAccess::ReadOnly;
             counts.textures += 1;
         }
-        ref other => unimplemented!("RUNE_GPU_BACKEND=metal: binding {other:?}"),
+        ref other => super::unsupported!("binding {other:?}"),
     }
     target
 }
@@ -114,7 +124,7 @@ impl BindGroupLayout {
     pub(crate) fn new(desc: &wgpu::BindGroupLayoutDescriptor<'_>) -> Self {
         let mut entries = desc.entries.to_vec();
         entries.sort_by_key(|e| e.binding);
-        assert!(entries.iter().all(|e| e.count.is_none()), "RUNE_GPU_BACKEND=metal: binding arrays");
+        if entries.iter().any(|e| e.count.is_some()) { super::unsupported!("binding arrays") }
         BindGroupLayout { entries: entries.into() }
     }
 }
@@ -140,8 +150,10 @@ impl PipelineLayout {
             }
         }
         let mut bases = Vec::new();
+        let mut entries = Vec::new();
         for (group, layout) in groups.iter().enumerate() {
             bases.push(counts);
+            entries.push(layout.map_or_else(|| Arc::from([]), |l| l.entries.clone()));
             let Some(layout) = layout else { continue };
             for entry in layout.entries.iter() {
                 let binding = naga::ResourceBinding { group: group as u32, binding: entry.binding };
@@ -155,7 +167,7 @@ impl PipelineLayout {
         for s in 0..3 {
             if storage[s] { stages[s].sizes_buffer = Some(counts[s].buffers); }
         }
-        PipelineLayout { raw: Arc::new(LayoutRaw { bases, stages, immediates: immediate_size }) }
+        PipelineLayout { raw: Arc::new(LayoutRaw { bases, stages, immediates: immediate_size, groups: entries }) }
     }
 }
 
@@ -196,7 +208,7 @@ impl BindGroup {
                         let Some(msl::BindSamplerTarget::Resource(at)) = slot.sampler else { unreachable!() };
                         binds.samplers.push((at, sampler.as_custom::<MetalSampler>().expect("a Metal sampler").raw.0.clone()));
                     }
-                    other => unimplemented!("RUNE_GPU_BACKEND=metal: bind group resource {other:?}"),
+                    other => super::unsupported!("bind group resource {other:?}"),
                 }
             }
         }

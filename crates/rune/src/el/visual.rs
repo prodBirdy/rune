@@ -15,6 +15,8 @@ use crate::text::Icon;
 #[derive(Clone, Debug)]
 pub struct VisualCold {
     pub surface: Option<(crate::NativeSurface, crate::SurfaceFit)>,
+    /// Where a surface or `pixels_fit` image sits in the rect (`El::surface_anchor`, `El::surface_unscaled`).
+    pub(crate) surface_place: crate::native_surface::place::SurfacePlace,
     /// Bottom colour of a vertical border gradient whose top is `border` (`El::border_gradient`).
     pub border_bottom: Option<Color>,
     /// Dash and gap lengths of a dashed border, in points (`El::border_dash`).
@@ -76,6 +78,7 @@ pub struct VisualCold {
 impl Empty for VisualCold {
     const EMPTY: &'static Self = &VisualCold {
         surface: None,
+        surface_place: crate::native_surface::place::SurfacePlace::CENTRED,
         border_bottom: None,
         border_dash: None,
         border_dash_phase: 0.0,

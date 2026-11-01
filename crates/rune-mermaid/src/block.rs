@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use rune::Align;
 
-use super::canvas::{Canvas, Measured, Scene, measure_wrap, over_color, rounded_rect, unit};
+use super::canvas::{Canvas, Measured, Scene, measure_wrap, rounded_rect, unit};
 use super::connector::{connector, inset, label_box};
 use super::flowchart::{ident, link, shape};
 use super::layered_draw::{Edge, NodeShape, boundary, node_size};
@@ -155,7 +155,7 @@ impl Parser {
         let ends: Vec<usize> = refs.into_iter().map(|r| self.add(r)).collect::<Option<_>>()?;
         for (l, w) in links.into_iter().zip(ends.windows(2)) {
             self.budget()?;
-            self.d.edges.push(Edge { from: w[0], to: w[1], label: l.label, line: l.line, start: l.start, end: l.end, minlen: 1, style: EdgeStyle::default() });
+            self.d.edges.push(Edge { from: w[0], to: w[1], label: l.label, line: l.line, start: l.start, end: l.end, minlen: 1, style: EdgeStyle::default(), on_cluster: [None; 2] });
         }
         Some(())
     }
@@ -351,7 +351,7 @@ pub(crate) fn draw(d: &BlockDiagram, paint: &DiagramStyle) -> Option<Scene> {
     let [w, h] = l.measure(0);
     l.place(0, [0.0, 0.0, w, h]);
     let mut c = Canvas::default();
-    let group_border = over_color(paint.node_border.alpha(0.45), paint.surface_border);
+    let group_border = crate::canvas::group_border(paint);
     for i in 1..n {
         if matches!(d.blocks[i].kind, Kind::Group { .. }) {
             let [x, y, w, h] = l.rects[i];

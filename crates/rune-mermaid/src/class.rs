@@ -282,7 +282,7 @@ impl Parser {
         } else {
             (from, to, start_h, end_h)
         };
-        self.d.edges.push(Edge { from, to, label, line, start, end, minlen: 1, style: EdgeStyle::default() });
+        self.d.edges.push(Edge { from, to, label, line, start, end, minlen: 1, style: EdgeStyle::default(), on_cluster: [None; 2] });
         Some(())
     }
 

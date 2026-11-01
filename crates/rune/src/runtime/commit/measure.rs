@@ -37,6 +37,7 @@ impl<S: 'static> Runtime<S> {
     }
 
     pub(super) fn measurement(&mut self, committing: bool) -> Measurement<'_, S> {
+        let hold_windows = self.checking_live_only();
         Measurement {
             state: &self.state,
             view: self.view,
@@ -73,6 +74,7 @@ impl<S: 'static> Runtime<S> {
             focused: self.focused.as_deref(),
             state_unchanged: std::mem::take(&mut self.state_unchanged),
             retry: false,
+            hold_windows,
         }
     }
 
@@ -292,7 +294,14 @@ impl<S: 'static> Measurement<'_, S> {
             // its viewport and a budget of overscan, and the rest fills over the next frames.
             let budget = v.indexed && !self.retry && !tx.settle;
             let shown = std::mem::take(&mut v.shown);
-            v.select(offset, pinned, budget.then_some(&shown));
+            // A live-only check's commit keeps the rows mounted now while they still cover the
+            // viewport, as skipping the commit would: re-picking the overscan for a viewport that
+            // changed since would build rows the handler had nothing to do with.
+            if self.hold_windows && same && !self.retry && !force_all && !v.needs_window(offset, pinned) {
+                v.hold(offset, pinned);
+            } else {
+                v.select(offset, pinned, budget.then_some(&shown));
+            }
             if force_all { v.range = 0..v.keys.len(); v.before = 0.0; v.after = 0.0; }
             // Keys are unique, so a key is mounted when its row's index is in the range.
             for key in shown.iter().filter(|k| v.index_of(k).is_some_and(|i| !v.range.contains(&i))) {
@@ -366,7 +375,7 @@ impl<S: 'static> Measurement<'_, S> {
         // Reads made by memos this build reused count as made again.
         self.caret_read = cx.caret_read.get() || replayed.caret;
         self.layout_reads = cx.layout_reads.take();
-        for read in replayed.layout { layout_read::note_read(&mut self.layout_reads, &read.key, read.same); }
+        for read in replayed.layout { layout_read::note_read_at(&mut self.layout_reads, &read.key, read.same, read.at); }
 
         let mut taffy = std::mem::replace(self.layout, TaffyTree::with_capacity(0));
         for entry in self.layout_entries.values_mut() {

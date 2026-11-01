@@ -4,9 +4,10 @@ use std::collections::{HashMap, HashSet};
 
 use rune::Color;
 
-use super::canvas::{Canvas, Scene, measure};
+use super::canvas::{Canvas, Scene, measure_balanced};
 use super::layered::{MAX_MINLEN, Spacing};
 use super::layered_draw::{ClusterSpec, Dir, DrawNode, Edge, Head, Line, NodeShape, layered_canvas, node_size};
+use super::parts::Names;
 use super::{
     Cur, DiagramStyle, EdgeStyle, Hover, MAX_DEPTH, MAX_ITEMS, NodeStyle, StyleSheet, clean, clean_quoted,
     parse_edge_style_props, statements,
@@ -75,9 +76,11 @@ pub(crate) fn parse(header: &str, body: &[&str]) -> Option<Flowchart> {
     (!p.f.nodes.is_empty()).then_some(p.f)
 }
 
-/// Redirects edges targeting a `subgraph id` placeholder onto that subgraph's first/last member.
+/// Redirects edges targeting a `subgraph id` placeholder onto that subgraph's first/last member,
+/// which ranks the edge, and marks that end to stop on the subgraph's border. An edge from inside
+/// the subgraph to itself keeps the member.
 fn resolve_subgraph_endpoints(f: &mut Flowchart) {
-    let mut redirects: HashMap<usize, (usize, usize)> = HashMap::new();
+    let mut redirects: HashMap<usize, (usize, usize, usize)> = HashMap::new();
     for (sg_idx, sg) in f.subgraphs.iter().enumerate() {
         let Some(id) = &sg.id else { continue };
         let Some(node_idx) = f.nodes.iter().position(|n| &n.id == id && !n.explicit_shape) else { continue };
@@ -85,18 +88,25 @@ fn resolve_subgraph_endpoints(f: &mut Flowchart) {
             .filter(|&i| i != node_idx && in_cluster(i, sg_idx, &f.nodes, &f.subgraphs))
             .collect();
         if let (Some(&first), Some(&last)) = (members.first(), members.last()) {
-            redirects.insert(node_idx, (first, last));
+            redirects.insert(node_idx, (first, last, sg_idx));
         }
     }
     if redirects.is_empty() {
         return;
     }
     for e in &mut f.edges {
-        if let Some(&(_, last)) = redirects.get(&e.from) {
+        let (from, to) = (e.from, e.to);
+        let inside = |v: usize, sg: usize| match redirects.get(&v) {
+            Some(r) => std::iter::successors(Some(r.2), |&s| f.subgraphs[s].parent).take(f.subgraphs.len() + 1).any(|s| s == sg),
+            None => in_cluster(v, sg, &f.nodes, &f.subgraphs),
+        };
+        if let Some(&(_, last, sg)) = redirects.get(&from) {
             e.from = last;
+            e.on_cluster[0] = (!inside(to, sg)).then_some(sg);
         }
-        if let Some(&(first, _)) = redirects.get(&e.to) {
+        if let Some(&(first, _, sg)) = redirects.get(&to) {
             e.to = first;
+            e.on_cluster[1] = (!inside(from, sg)).then_some(sg);
         }
     }
     let mut keep = Vec::with_capacity(f.nodes.len());
@@ -264,6 +274,7 @@ impl Parser {
                         end: link.end,
                         minlen: link.minlen,
                         style: EdgeStyle::default(),
+                        on_cluster: [None; 2],
                     });
                 }
             }
@@ -676,12 +687,21 @@ pub(crate) fn draw_canvas(f: &Flowchart, paint: &DiagramStyle, hover: Option<(Ho
         .nodes
         .iter()
         .map(|n| {
-            let label = measure(&n.label, paint.font);
+            let label = measure_balanced(&n.label, paint.font);
             DrawNode::Shape { shape: n.shape, size: node_size(n.shape, label.size), label, cluster: n.cluster, style: n.style }
         })
         .collect();
     let clusters: Vec<ClusterSpec> = f.subgraphs.iter().map(|s| ClusterSpec { title: s.title.clone(), parent: s.parent }).collect();
-    layered_canvas(f.dir, &nodes, &f.edges, &clusters, &SPACING, paint, hover)
+    let names = names(f);
+    let mut c = layered_canvas(f.dir, &nodes, &names.nodes, &f.edges, &clusters, &SPACING, paint, hover)?;
+    c.names = names;
+    Some(c)
+}
+
+/// Nodes and subgraphs by id, edges by their ends.
+fn names(f: &Flowchart) -> Names {
+    let frames = f.subgraphs.iter().enumerate().map(|(i, s)| s.id.clone().unwrap_or_else(|| format!("#{i}"))).collect();
+    Names::new(f.nodes.iter().map(|n| n.id.clone()).collect(), &f.edges, frames)
 }
 
 #[cfg(test)]

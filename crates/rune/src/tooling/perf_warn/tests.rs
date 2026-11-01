@@ -36,6 +36,9 @@ fn a_short_virtualize_list_stays_quiet() {
 
 #[test]
 fn a_callback_blocked_past_its_cpu_time_warns_once_per_site() {
+    if super::runq::wait_ms().is_none() && super::runq::overloaded() {
+        return eprintln!("skipped: the machine has no core to spare, so a sleep can't be told from a wait");
+    }
     take_log();
     for _ in 0..2 {
         let stall = Stall::start();
@@ -67,6 +70,9 @@ fn a_callback_that_computes_is_not_a_stall() {
 
 #[test]
 fn a_blocking_poll_names_poll() {
+    if super::runq::wait_ms().is_none() && super::runq::overloaded() {
+        return eprintln!("skipped: the machine has no core to spare, so a sleep can't be told from a wait");
+    }
     take_log();
     fn view(_: &u32, _: &mut Cx<u32>) -> El { col() }
     let mut rt = Runtime::new(0u32, view, (100.0, 100.0), Env::new(true, 1.0));

@@ -38,6 +38,26 @@ Why this split wins:
    macOS; Warp ships the same native-Metal-plus-`wgpu` split; Flutter Impeller's Vulkan backend
    (~21 kLOC) is 3.5 times its Metal backend (~5.9 kLOC).
 
+## Default on macOS
+
+Since 2026-10-31 the native backend is the default on macOS: `metal-backend` is one of Rune's
+default features, and an app that doesn't call `App::gpu_backend` draws with it, prewarm
+included. `App::gpu_backend(GpuBackend::Wgpu)` or `RUNE_GPU_BACKEND=wgpu` opts out, and an app
+built with `default-features = false` keeps wgpu unless it adds the feature. `GpuBackend`'s
+`Default` is still `Wgpu`; the backend keeps the app's choice as unset, `Wgpu` or `Metal`
+internally, so an explicit `Wgpu` always wins. wgpu's `custom` feature is turned on for macOS
+targets only, so Linux, Windows, web and iOS builds compile what they did before. iOS keeps wgpu.
+
+Where the native backend falls short of wgpu, a defaulted app either falls back or fails loudly:
+
+- A compositor whose `Compositor::features` asks for something the backend doesn't offer (it
+  offers `TIMESTAMP_QUERY`) gets a wgpu device for that window or headless run, said once.
+- Pipelines made with `layout: None` derive their layout from the shaders, as wgpu-core does.
+- Depth and stencil, multisampling, more than four colour targets, indirect draws and
+  dispatches, render bundles, occlusion and pipeline-statistics queries, timestamps written
+  inside or between passes, non-WGSL shaders, `clear_texture`, binding arrays and uncommon
+  texture or vertex formats panic with a message that names the opt-out.
+
 ## 1. Where GPU CPU goes: HUD overlays vs normal windows
 
 ### Code checks and corrections to earlier notes
@@ -324,6 +344,113 @@ standalone `wgpu::naga` (`wgsl` → `process_overrides` → `msl`) compiles ever
   beats or matches baseline; `.metallib` freshness and pixel-equivalence tests pass across
   `rune`, `rune-fx` and `rune-light`.
 
+#### Done: every built-in pipeline precompiled (native backend, macOS and iOS)
+
+`gpu/metal/builtin.rs` looks up each pipeline's function in `builtin_native.metallib` before it
+calls naga. The key hashes everything that decides naga's MSL: the WGSL, stage, entry point,
+override constants, runtime checks, point size, and the slots *this pipeline's layout* hands out.
+So a precompiled function binds exactly what the runtime path would give it, and a table row
+carries the sized bindings and the workgroup size. A module whose WGSL is built in isn't parsed
+unless a pipeline misses the table. `scripts/precompile-metal-shaders.sh` captures the MSL
+(`RUNE_METAL_CAPTURE`) from rune-light's `builtin_shaders` test, which builds every pipeline,
+and compiles it for macOS, iOS and the iOS simulator: 60 pipelines, 53 distinct functions, each
+in its own namespace. The capture builds the uber shader from WGSL too, since iOS has no
+`uber_native.metallib`.
+The same test fails on a miss, so a shader edit without a regenerate shows up there. App shaders
+miss the table and compile at runtime as before.
+
+Measured with `shader_first_use` (`--profile perf`, fresh processes, 10 alternating rounds,
+medians, M-class MacBook Pro). Cold means `com.apple.metal` was cleared before the run:
+
+| First use | Cold, runtime MSL | Cold, precompiled | Warm, runtime | Warm, precompiled |
+|---|---|---|---|---|
+| `Renderer::new` (uber, already precompiled) | 110 ms | 114 ms | 1.2 ms | 1.3 ms |
+| backdrop blur + composite | 394 ms | 29 ms | 2.2 ms | 0.7 ms |
+| layer blur (5 specializations) | 727 ms | 45 ms | 1.6 ms | 0.2 ms |
+| video | 201 ms | 22 ms | 1.1 ms | 0.2 ms |
+| transparent window (straight alpha) | 87 ms | 5 ms | 0.2 ms | 0.1 ms |
+| `Renderer::with_springs` | 305 ms | 81 ms | 3.3 ms | 0.2 ms |
+| `FxRenderer::new` (before lazy pipelines, below) | 3,627 ms | 1,260 ms | 32.5 ms | 1.2 ms |
+| `FxRenderer::add_format` (likewise) | 1,283 ms | 1,263 ms | 15.1 ms | 0.8 ms |
+| fire simulation | 1,207 ms | 101 ms | 2.0 ms | 0.2 ms |
+| `LightRenderer::new` | 1,389 ms | 127 ms | 5.7 ms | 0.6 ms |
+| `GlassRenderer::new` | 392 ms | 126 ms | 6.0 ms | 4.0 ms |
+
+Most of a cold pipeline is Metal's front end (MSL to AIR). Clearing only Metal's library cache
+cost a first layer blur 555 ms, and clearing only its function cache cost 45 ms. What remains is
+GPU code generation, which the precompiled library can't skip. That's why `add_format`, the same
+fx functions for another format, stayed at 1.26 s cold (until rune-fx stopped building pipelines it
+hadn't drawn, below). 1,669 readbacks across the rune, rune-fx
+and rune-light tests were byte-identical with the library on and off. `settings` first pixels
+didn't change (it builds only the uber pipeline).
+
+Cost: 539 KB in the binary (`settings` stripped: 17.37 → 17.90 MB). The library compresses to
+235 KB with deflate, which macOS's Compression framework could decode in about a millisecond.
+That's left for later. naga stays in every binary: its WGSL front end, validator and MSL back end
+are about 1.3 MB of `settings`' 11.2 MB of code, and both wgpu's backend in the same binary and
+app shaders need them. The wgpu backend doesn't use the library.
+
+On the iOS 27 simulator (same Mac, 6 alternating rounds for `shader_first_use`, 8 for
+`embed_cost`, medians; cold clears the simulator's and the host's `com.apple.metal`), the
+precompiled library also covers the uber shader, which compiled at runtime there before:
+
+| First use, iOS simulator | Cold, runtime MSL | Cold, precompiled | Warm, runtime | Warm, precompiled |
+|---|---|---|---|---|
+| `embed_cost` first frame | 430 ms | 243 ms | 35.0 ms | 31.6 ms |
+| `Renderer::new` (uber) | 390 ms | 194 ms | 5.9 ms | 2.6 ms |
+| layer blur | 723 ms | 10 ms | 3.4 ms | 1.3 ms |
+| `FxRenderer::new` | 2,098 ms | 85 ms | 40.7 ms | 5.2 ms |
+| `LightRenderer::new` | 1,254 ms | 27 ms | 9.5 ms | 1.9 ms |
+| every built-in pipeline | 6,631 ms | 440 ms | 102 ms | 18 ms |
+
+The device library (`builtin_native_ios.metallib`) compiles from the same MSL but hasn't run on
+a phone yet.
+
+#### Done: rune-fx builds a pipeline the first time a frame draws it
+
+`FxRenderer::new` built every effect family (8) in both blends (16 pipelines), plus the mask
+pyramid's and the backdrop blur's three, serially on the calling thread, and `add_format` built the
+16 again for each extra format, whether or not the app ever drew those effects. After the library,
+what's left of a cold pipeline is GPU code generation, and none of it is shared: per pipeline, on a
+cold cache, glow 35 ms, pulse 31, electric 38, fire 74, distort 61, motion 21, extras 39 and fill
+152, and the screen blend and the `Rgba16Float` format each cost as much again as the first, since
+Apple GPUs blend in the fragment shader and each format is its own variant. Serially that's
+937 ms per format.
+
+Now each `(format, family, blend)` pipeline sits in a `OnceLock` and is built when a frame first
+needs it. `prepare` builds the ones its layers use for the frame's format, in parallel (scoped
+threads; Metal compiles concurrently, and wgpu's `Device` is `Send + Sync`), and a draw into
+another format builds its own on demand. The mask pyramid and backdrop blur passes wait for
+`build_mips` and the first frosted layer. The keys the precompiled library looks up don't change,
+so `builtin_shaders` (which now calls `FxRenderer::build_every_pipeline`) still finds all of them.
+
+Measured with `crates/rune-fx/examples/first_glow.rs` (`--profile perf`, fresh processes,
+10 alternating rounds, medians, an M4 Pro Mac mini, native Metal backend with the library): new
+renderer, `add_format(Rgba16Float)`, then prepare, draw, submit and read back one glow.
+
+| First glow | Cold, before | Cold, after | Warm, before | Warm, after |
+|---|---|---|---|---|
+| `FxRenderer::new` | 919 ms | 0.14 ms | 1.47 ms | 0.10 ms |
+| `FxRenderer::add_format` | 865 ms | 0.00 ms | 0.67 ms | 0.00 ms |
+| first frame (prepare, draw, read back) | 5.8 ms | 70.7 ms | 5.6 ms | 6.1 ms |
+| **total, `new` to pixels** | **1,799 ms** | **70.9 ms** | **7.9 ms** | **6.2 ms** |
+
+About half of the 70 ms is a fresh process's first pipeline warming Metal's compiler up; after a
+`Renderer::new` (as in an app) the same glow pipeline takes 40 to 50 ms cold. All 35 pipelines at
+once (`shader_first_use`'s `fx_every_pipeline`, both formats, in parallel) take 410 ms cold against
+1,796 ms for `new` plus `add_format` before; 16 pipelines on 16 threads take 217 ms, on 4 threads
+332 ms, serially 937 ms.
+
+- **Considered: compile everything in the background at `new` and wait only at first draw.** The
+  glow is ready just as fast (70 ms, it goes first), but it spends about 930 ms of compiler time
+  per format on effects an app may never show, competing with its launch.
+- **Considered: skip an effect until its pipeline is ready.** No frame would wait, but the first
+  frame would draw without the effect and then pop it in, and readbacks of a first frame would
+  change.
+- **Not split: the two blend states.** Screen blending (`One, OneMinusSrc`) needs the destination,
+  which only fixed-function blending gives without a backdrop copy, so it stays its own pipeline,
+  built only when a `FxBlend::Screen` slot draws.
+
 #### Considered, not done: `MTLBinaryArchive`
 
 Measured on the native backend after step 4, on an M2-class Mac, with fresh processes and medians
@@ -491,3 +618,64 @@ shape but not each pipeline's exact strides.
 - A direct write can race a frame still on the GPU that reads the same buffer. Phase 1's ring
   is needed for correctness, and will add a little to `WRITES=1`.
 - The layer's scale is set once at creation and doesn't follow a display change.
+
+## Memory: Metal vs wgpu
+
+One app reported, from single unpaired runs, a headless footprint of about 330 MB on the Metal
+backend against 1.5 to 1.6 GB on wgpu. Paired and alternating runs of one `--profile perf` binary
+(`--features rune/metal-backend`, `RUNE_GPU_BACKEND=metal` or `wgpu`), five pairs each, medians.
+Footprint is `phys_footprint` (`footprint`, `time -l` for the peak); RSS from `ps` or `time -l`.
+Headless is `long_note --gpu --only scroll --sizes 200 --samples 300` (a 200 KB note scrolled
+top to bottom, 785 frames, drawn on a headless GPU). Windows are real, on an M2 Max MacBook Pro
+(macOS 27.0.1, unlocked, awake): `hello` idle after 5 s, and `window_scroll_cost` (60 sections of
+text rows, scrolling at 600 pt/s) sampled at 7 s, about 400 frames in.
+
+| Case | Backend | Footprint | RSS | Peak footprint |
+| --- | --- | ---: | ---: | ---: |
+| Headless, Mac mini (M4 Pro) | wgpu | – | 49.1 MB | 278.1 MB |
+| | Metal | – | 46.3 MB | 276.7 MB |
+| Headless, MacBook Pro (M2 Max) | wgpu | – | 47.6 MB | 58.0 MB |
+| | Metal | – | 44.7 MB | 57.8 MB |
+| Window idle, 5 s | wgpu | 34 MB | 95.1 MB | 41.5 MB |
+| | Metal | 33 MB | 92.5 MB | 39.7 MB |
+| Window scrolling, 7 s | wgpu | 68 MB | 104.1 MB | 67.5 MB |
+| | Metal | 74 MB | 101.1 MB | 74.2 MB |
+
+**The claim does not hold in these workloads.** The two backends are within a few MB of each
+other everywhere, and neither gets near 330 MB, let alone 1.5 GB. Metal has about 3 MB less RSS;
+in the scrolling window it has about 6 MB more footprint. I sampled only at 7 s, so growth over a longer run is
+not ruled out.
+
+**Where the reported gap most likely came from: an unpaced headless run.** A later headless
+scroll benchmark that submits frames as fast as it can (about 1,650 a second, 900 frames)
+reproduced it: 325 MB footprint on Metal against 1,956 MB on wgpu. The GPU can't keep up at that
+rate, so both runs take the same 0.55 s. Rune's Metal queue keeps Apple's default limit of 64
+command buffers in flight and blocks the next one at the start of encode. wgpu allows 2,048, so
+it never blocks and gets hundreds of frames ahead, each holding its own buffers. A window paces
+frames to the display, so neither queue fills there, which matches the tables above. The same
+wait is why such a run reports a higher `encode_ms` on Metal (0.35 ms against 0.19) while its
+frame CPU is lower (0.27 to 0.30 ms against 0.38). `encode_ms` is elapsed time, so in an unpaced
+run it mostly measures how far behind the GPU is; compare backends there with `thread_cpu_ms` or
+`cpu_ms`.
+
+Where the footprint goes (`footprint` by category, one run each):
+
+| Category | wgpu idle | Metal idle | wgpu scrolling | Metal scrolling |
+| --- | ---: | ---: | ---: | ---: |
+| IOSurface (the layer's drawables) | 5.6 MB | 5.6 MB | 22 MB | 22 MB |
+| IOAccelerator (graphics), dirty | 1.1 MB | 1.2 MB | 4.4 MB | 6.6 MB |
+| Owned physical footprint (graphics) | 6.2 MB | 5.6 MB | 7.6 MB | 9.6 MB |
+| Malloc small | 12 MB | 11 MB | 20 MB | 19 MB |
+
+The wgpu#10494 growth (about 2.3 MiB of IOAccelerator memory per command buffer, held until the
+buffers are collected) does not show: wgpu's IOAccelerator is no larger than Metal's after
+hundreds of frames. The 6 MB scrolling difference is IOAccelerator and graphics-owned memory,
+likely the Metal backend's own pooled buffers and the drawable it keeps in flight, and I did not
+chase it further.
+
+So a gap of 1 GB or more is not something the backend alone produces. It must come from what that
+app draws or keeps: large images or atlases, offscreen targets, or buffers that wgpu keeps alive
+and the Metal backend frees or never makes. To attribute it, run that app's own headless frames
+under both backends with `footprint --by-category` and `vmmap --summary`, and compare
+IOAccelerator, IOSurface and Malloc. Not measured here: an app with image-heavy views, effects
+or many windows, and a long idle run.

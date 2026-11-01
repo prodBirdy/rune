@@ -866,6 +866,10 @@ impl<S: 'static> Host<S> {
             alpha,
             quiet: false,
             presented: None,
+            #[cfg(target_os = "windows")]
+            steady_until: None,
+            #[cfg(target_os = "windows")]
+            steady_frame: false,
         });
         if launcher { self.win.as_mut().unwrap().first_frame.prepare(); }
         self.apply_placement(event_loop);

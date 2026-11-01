@@ -234,6 +234,15 @@ impl Renderer {
         let names = rendered_keys(blocks.len(), keys);
         let empty = BlockMap::None;
         for ((i, b), key) in blocks.iter().enumerate().zip(names) {
+            // A fence still arriving with no lines yet (its language may be half written:
+            // ```` ```mer ````) shows nothing until its first line, then mounts as what it is.
+            if self.streaming && matches!(b, Block::Code(c) if c.is_empty()) {
+                let n = self.next_source.get();
+                if self.sources.get(n).is_some_and(|s| s.open && s.len == 0) {
+                    self.next_source.set(n + 1);
+                    continue;
+                }
+            }
             let (mt, mb) = margins(b, &self.s);
             let top = if i == 0 { 0.0 } else { mt.max(prev_mb) };
             if top_level {
@@ -312,14 +321,28 @@ impl Renderer {
         c
     }
 
-    #[cfg_attr(not(feature = "mermaid"), allow(clippy::unused_self))]
-    pub(super) fn mermaid(&self, src: &str, map: Option<&SpanMap>) -> El {
+    /// A diagram, drawn from its complete lines while its fence is still open; until any read
+    /// (or for a type it doesn't draw), its source as a code block. While [`Renderer::streaming`],
+    /// a fence whose header may yet draw shows nothing until it does, so the source never
+    /// flashes before the diagram.
+    pub(super) fn mermaid(&self, src: &str, source: Option<&Source>, map: Option<&SpanMap>) -> El {
         #[cfg(feature = "mermaid")]
         {
-            crate::mermaid::diagram(src, &self.s.diagram).unwrap_or_else(|| col().w_full().child(self.code(src, None, map).key("source")))
+            let open = source.is_some_and(|s| s.open);
+            let lines = if open { &src[..source.map_or(src.len(), |s| s.coloured.min(src.len()))] } else { src };
+            // The card sits in a bare holder, so a fence that draws nothing yet holds its place
+            // and the card mounts into it (fading in) rather than the block turning into one.
+            let holder = || col().w_full().transition(rune::Transition::none());
+            if let Some(d) = crate::mermaid::diagram(lines, &self.s.diagram, self.streaming, open) {
+                return holder().child(d.key("card"));
+            }
+            if open && self.streaming && crate::mermaid::may_draw(lines) {
+                return holder();
+            }
+            col().w_full().child(self.code(src, source, map).key("source"))
         }
         #[cfg(not(feature = "mermaid"))]
-        self.code(src, None, map)
+        self.code(src, source, map)
     }
 
     fn task_item(&self, k: usize, item: &[Block], item_maps: &[BlockMap], item_idx: usize, checked: bool) -> El {
@@ -381,7 +404,11 @@ impl Renderer {
                 self.code(code, self.sources.get(n).filter(|src| src.len == code.len()), code_map)
             }
             Block::Diff(src) => self.diff(src, code_map),
-            Block::Mermaid(src) => self.mermaid(src, code_map),
+            Block::Mermaid(src) => {
+                let n = self.next_source.get();
+                self.next_source.set(n + 1);
+                self.mermaid(src, self.sources.get(n).filter(|s| s.len == src.len()), code_map)
+            }
             Block::Table(t) => {
                 let (head_maps, row_maps) = match map {
                     BlockMap::Table { head, rows } => (head.as_slice(), rows.as_slice()),

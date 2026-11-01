@@ -4,8 +4,9 @@
 //! WGSL as the one shader language, by translating with naga itself?
 
 use objc2_foundation_video::NSString;
-use objc2_metal::{MTLCompileOptions, MTLCreateSystemDefaultDevice, MTLDevice, MTLLanguageVersion};
+use objc2_metal::{MTLCompileOptions, MTLCreateSystemDefaultDevice, MTLDevice};
 use objc2_video::runtime::ProtocolObject;
+use super::device::msl_version;
 use wgpu::naga::{
     self,
     back::{msl, pipeline_constants::process_overrides},
@@ -110,18 +111,6 @@ fn cases() -> Vec<Case> {
         cases.push(case(&format!("light reel {name}"), &["rune-light/examples/reel/reel.wgsl"], reel_part(name)));
     }
     cases
-}
-
-/// wgpu-hal's choice of MSL version for this macOS.
-fn msl_version() -> ((u8, u8), MTLLanguageVersion) {
-    let out = std::process::Command::new("sw_vers").arg("-productVersion").output().expect("sw_vers");
-    let major: u32 = String::from_utf8_lossy(&out.stdout).split('.').next().and_then(|m| m.trim().parse().ok()).unwrap_or(0);
-    match major {
-        26.. => ((4, 0), MTLLanguageVersion::Version4_0),
-        15 => ((3, 2), MTLLanguageVersion::Version3_2),
-        14 => ((3, 1), MTLLanguageVersion::Version3_1),
-        _ => ((3, 0), MTLLanguageVersion::Version3_0),
-    }
 }
 
 /// Slots as wgpu-hal hands them out for a layout holding every binding the module declares:

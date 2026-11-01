@@ -233,7 +233,7 @@ impl QueueInterface for MetalQueue {
     fn create_staging_buffer(&self, _: wgpu::BufferSize) -> Option<DispatchQueueWriteBuffer> { None }
     fn validate_write_buffer(&self, _: &DispatchBuffer, _: wgpu::BufferAddress, _: wgpu::BufferSize) -> Option<()> { Some(()) }
     fn write_staging_buffer(&self, _: &DispatchBuffer, _: wgpu::BufferAddress, _: &DispatchQueueWriteBuffer) {
-        unimplemented!("RUNE_GPU_BACKEND=metal: Queue::write_buffer_with")
+        super::unsupported!("Queue::write_buffer_with")
     }
     fn write_texture(&self, dst: wgpu::TexelCopyTextureInfo<'_>, data: &[u8], layout: wgpu::TexelCopyBufferLayout, size: wgpu::Extent3d) {
         let data = &data[layout.offset as usize..];
@@ -263,7 +263,7 @@ impl QueueInterface for MetalQueue {
     }
     fn get_timestamp_period(&self) -> f32 { 1.0 }
     fn on_submitted_work_done(&self, callback: BoxSubmittedWorkDoneCallback) { self.0.after(Callback::Done(callback)) }
-    fn compact_blas(&self, _: &DispatchBlas) -> (Option<u64>, DispatchBlas) { unimplemented!("RUNE_GPU_BACKEND=metal: ray tracing") }
+    fn compact_blas(&self, _: &DispatchBlas) -> (Option<u64>, DispatchBlas) { super::unsupported!("ray tracing") }
     fn present(&self, detail: &DispatchSurfaceOutputDetail) {
         let Some(output) = detail.as_custom::<MetalOutput>() else { return };
         let Some(drawable) = &output.drawable else { return };

@@ -621,9 +621,12 @@ Staying fast afterwards is "Fast apps" (`site/src/FastApps.tsx`) and "Smooth scr
   while AppKit starts; the first window or overlay opened at launch takes them, waiting if the thread is still
   working. A second call does nothing. With no window at launch the result is dropped; a window that needs features
   the prewarmed device lacks gets a new device. Elsewhere it does nothing. The run functions call it too, but only
-  once the event loop starts. An app that draws with `GpuBackend::Metal` calls `rune::prewarm_gpu_on(GpuBackend::Metal)`
-  instead, which chooses the backend and then starts the thread, so it doesn't start on wgpu and start over when
-  `App::gpu_backend` runs; that call afterwards changes nothing.
+  once the event loop starts. It starts on the backend the app draws with by default: on macOS, Rune's own Metal
+  backend (the `metal-backend` feature, on by default; an app built with `default-features = false` gets wgpu unless
+  it adds the feature). An app that opts out with `App::gpu_backend(GpuBackend::Wgpu)` calls
+  `rune::prewarm_gpu_on(GpuBackend::Wgpu)` instead, which chooses the backend and then starts the thread, so it
+  doesn't start on the native backend and start over when `App::gpu_backend` runs; that call afterwards changes
+  nothing. `RUNE_GPU_BACKEND=wgpu` or `=metal` overrides both without a rebuild.
 - **Precompiled Metal uber shader.** `crates/rune/src/uber.metallib` is loaded through wgpu's passthrough shaders,
   skipping WGSL translation and Metal's compile (`Renderer::new` 232 ms to 85 ms on a cold shader cache). The WGSL
   path is the fallback when the adapter lacks passthrough support, when `RUNE_DISABLE_METALLIB=1`, when the

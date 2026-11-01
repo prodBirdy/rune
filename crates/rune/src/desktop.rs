@@ -279,7 +279,7 @@ pub(crate) fn run(windows: Vec<AnyWindowSpec>, selected: usize, args: Args, acce
 
     let t0 = Instant::now();
     let features = desk.members.iter().fold(wgpu::Features::empty(), |f, m| f | m.features());
-    let gpu = Gpu::try_with_features(Gpu::instance(), None, features).unwrap_or_else(|e| die(&e));
+    let gpu = Gpu::try_with_features(Gpu::instance_for(features), None, features).unwrap_or_else(|e| die(&e));
     let max = gpu.device.limits().max_texture_dimension_2d;
     let (wp, hp) = pixels(size, scale, max).unwrap_or_else(|| die(&format!(
         "--desktop: the output, {}x{} points at --scale {scale}, must be 1 to {max} pixels a side", size.0, size.1)));

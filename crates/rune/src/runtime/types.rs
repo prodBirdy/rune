@@ -36,7 +36,7 @@ pub(crate) struct NodeCold {
     /// `El::sticky_top`, `El::sticky_bottom` and `El::stuck_shadow`.
     pub(super) sticky: Option<Box<crate::el::Sticky>>,
     pub(super) growth: Option<Box<GrowthSpec>>,
-    pub(super) glide: Option<rune_motion::Spring>,
+    pub(super) glide: Option<crate::growth::FoldGlide>,
     pub(super) a11y: crate::el::A11y,
     /// The image ratio this picture's layout took, when it sizes one side from its pixels.
     pub(super) pixel_aspect: Option<f32>,
@@ -354,6 +354,9 @@ pub(super) struct ScrollState {
     pub(super) far_from_bottom: Option<bool>,
     /// Whether the last frame drew the content's bottom on the viewport's (see `stuck_offset`).
     pub(super) held: bool,
+    /// The offset, x and y, the last frame drew the content at, in points (slack and a stuck
+    /// bottom included): how far it carried the content up and left.
+    pub(super) drawn: [f32; 2],
     /// Room freed under a pinned growth stack, held under its last row (see `step_slack`).
     pub(super) slack: scroll_bottom::Slack,
     /// The horizontal axis of `El::scroll_x` and `El::scroll_xy`; all zero on a vertical one.

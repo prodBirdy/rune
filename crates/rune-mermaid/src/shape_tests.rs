@@ -103,3 +103,25 @@ fn a_ray_leaves_a_triangle_on_its_slanted_side() {
     let b = boundary(S::Triangle, [0.0, 0.0], size, [100.0, -60.0]);
     assert!(b[0] < 50.0 && b[0] > 0.0 && b[1] > -30.0, "up and right meets the slant first: {b:?}");
 }
+
+#[test]
+fn a_cylinder_has_mermaids_rims_and_its_label_under_the_front_one() {
+    let paint = DiagramStyle::neutral(false);
+    let label = measure("Note: lasts, has versions", paint.font);
+    let size = node_size(S::Cylinder, label.size);
+    let ry = rim(size[0]);
+    assert!((ry - size[0] / 2.0 / (2.5 + size[0] / 50.0)).abs() < 1e-3, "rim {ry} for width {}", size[0]);
+    let mut c = Canvas::default();
+    draw(&mut c, S::Cylinder, &label, [0.0, 0.0], size, [paint.node_fill, paint.node_border, paint.text], &paint);
+    let (top, bottom) = (-size[1] / 2.0, size[1] / 2.0);
+    // Past the outline, all a cylinder draws is its top rim, however it's painted.
+    let body = outline(S::Cylinder, [0.0, 0.0], size);
+    let rims: Vec<&Vec<[f32; 2]>> = c.ops.iter().map(|op| match op {
+        Op::Fill(points, _) | Op::Stroke { points, .. } => points,
+    }).filter(|p| **p != body).collect();
+    assert!(!rims.is_empty(), "a front rim on top");
+    assert!(rims.iter().flat_map(|p| p.iter()).all(|p| p[1] >= top - 0.01 && p[1] <= top + 2.0 * ry + 0.01), "nothing but the top rim inside the body");
+    let l = &c.labels[0];
+    assert!(l.at[1] >= top + 2.0 * ry, "the label clears the front rim: {} vs {}", l.at[1], top + 2.0 * ry);
+    assert!(l.at[1] + l.size[1] <= bottom - ry, "and the bottom rim");
+}

@@ -11,7 +11,7 @@ fn spans_with(src: &str, style: &MarkdownStyle, highlighter: Highlighter) -> Vec
     fn codes<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
         for b in blocks {
             match b {
-                Block::Code(c) => out.push(c),
+                Block::Code(c) | Block::Mermaid(c) => out.push(c),
                 Block::Quote(inner) => codes(inner, out),
                 Block::List { items, .. } => items.iter().for_each(|i| codes(i, out)),
                 _ => {}

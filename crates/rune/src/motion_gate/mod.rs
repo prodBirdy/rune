@@ -67,8 +67,11 @@ impl<S: 'static> Run<S> {
 
     /// Records one frame.
     pub fn step(&mut self) {
+        self.rt.commit_why = 0;
         let awake = self.rt.frame(self.dt);
         self.rec.awake.push(awake);
+        let why = std::mem::take(&mut self.rt.commit_why);
+        self.rec.commits(self.rt.scrolling(), why);
         let els: Vec<ElementInfo> = self.rt.elements();
         self.rec.sample(&els);
     }
@@ -114,3 +117,5 @@ impl<S: 'static> Run<S> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod loop_tests;

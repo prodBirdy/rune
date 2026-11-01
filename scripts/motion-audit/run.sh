@@ -7,7 +7,7 @@ O=${1:-target/motion-audit}
 mkdir -p "$O"
 cargo build --release -p todo -p settings -p kit-gallery -p odometer
 cargo build --release -p rune-kit --example shell
-cargo build --release -p rune --example growth_reorder --example keep_stuck --example sticky --example scroll_keys --example scroll_anchor --example text_glide
+cargo build --release -p rune --example growth_reorder --example keep_stuck --example sticky --example scroll_keys --example scroll_anchor --example text_glide --example one_snap
 B=${CARGO_TARGET_DIR:-target}/release
 SH=$B/examples/shell
 GR=$B/examples/growth_reorder
@@ -32,6 +32,8 @@ run gallery-combobox  3.0 $B/kit-gallery --scene rune-combobox--searchable --scr
 run gallery-combobox-animated 3.0 $B/kit-gallery --scene rune-combobox--animated-filter --script examples/kit-gallery/scripts/combobox-animated-filter.json
 run gallery-modal     5.5 $B/kit-gallery --scene motion-focus-modal --script examples/kit-gallery/scripts/motion-focus-modal.json
 run gallery-stagger-list 3.0 $B/kit-gallery --scene motion-stagger-list --script examples/kit-gallery/scripts/motion-stagger-list.json
+run gallery-mermaid-stream 4.5 $B/kit-gallery --scene rune-markdown--mermaid-streaming --size 1100x1400 --script $S/gallery-mermaid-stream.json
+run gallery-markdown-stream-tail 3.0 $B/kit-gallery --scene rune-markdown--stream-tail --script $S/gallery-markdown-stream-tail.json
 run odometer          5.4 $B/odometer --script $S/odometer.json
 run shell-idle        2.0 $SH
 run shell-toggle      3.0 $SH --script $S/shell-toggle.json
@@ -52,4 +54,5 @@ run sticky-scroll     1.6 $B/examples/sticky --script crates/rune/examples/stick
 run scroll-keys       3.2 $B/examples/scroll_keys --script $S/scroll-keys.json
 run scroll-anchor     3.4 $B/examples/scroll_anchor --script $S/scroll-anchor.json
 run text-glide        3.8 $B/examples/text_glide --script $S/text-glide.json
+run one-snap          4.4 $B/examples/one_snap --script $S/one-snap.json
 ls "$O"

@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 
-use objc2_metal::{MTLCommandQueue, MTLDevice, MTLLanguageVersion, MTLSharedEvent};
+use objc2_metal::{MTLCommandQueue, MTLDevice, MTLLanguageVersion, MTLLibrary, MTLSharedEvent};
 use parking_lot::Mutex;
 use wgpu::custom::*;
 
@@ -35,6 +35,8 @@ pub(crate) struct Shared {
     pub(super) recording: AtomicUsize,
     /// What new textures are zeroed from, made with the first.
     pub(super) zeros: OnceLock<Zeros>,
+    /// Rune's precompiled pipelines, loaded with the first pipeline that looks one up.
+    pub(super) builtin: OnceLock<Option<Obj<dyn MTLLibrary>>>,
 }
 send_sync!(Shared);
 
@@ -56,20 +58,24 @@ pub(super) fn new(device: Obj<dyn MTLDevice>, desc: &wgpu::DeviceDescriptor<'_>)
         textures: Arc::default(),
         recording: AtomicUsize::new(0),
         zeros: OnceLock::new(),
+        builtin: OnceLock::new(),
         device,
     });
     let device = MetalDevice { shared: shared.clone(), features: desc.required_features, limits: desc.required_limits.clone() };
     (device, MetalQueue(shared))
 }
 
-/// wgpu-hal's choice of MSL version for this macOS.
-fn msl_version() -> ((u8, u8), MTLLanguageVersion) {
+/// wgpu-hal's choice of MSL version for this macOS or iOS. Their numbers meet at 26; before, iOS
+/// 18 and 17 match macOS 15 and 14.
+pub(super) fn msl_version() -> ((u8, u8), MTLLanguageVersion) {
     let mut buf = [0u8; 32];
     let mut len = buf.len();
     // SAFETY: sysctlbyname writes at most `len` bytes into `buf` and the length it wrote into `len`.
     let ok = unsafe { libc::sysctlbyname(c"kern.osproductversion".as_ptr(), buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) } == 0;
     let version = if ok { String::from_utf8_lossy(&buf[..len.saturating_sub(1)]).into_owned() } else { String::new() };
     let major: u32 = version.split('.').next().and_then(|m| m.trim().parse().ok()).unwrap_or(0);
+    #[cfg(not(target_os = "macos"))]
+    let major = match major { 18 => 15, 17 => 14, 26.. => major, _ => 0 };
     match major {
         26.. => ((4, 0), MTLLanguageVersion::Version4_0),
         15 => ((3, 2), MTLLanguageVersion::Version3_2),
@@ -99,7 +105,7 @@ impl DeviceInterface for MetalDevice {
         DispatchRenderPipeline::custom(super::pipeline::create(&self.shared, desc))
     }
     fn create_mesh_pipeline(&self, _: &wgpu::MeshPipelineDescriptor<'_>) -> DispatchRenderPipeline {
-        unimplemented!("RUNE_GPU_BACKEND=metal: mesh shaders")
+        super::unsupported!("mesh shaders")
     }
     fn create_compute_pipeline(&self, desc: &wgpu::ComputePipelineDescriptor<'_>) -> DispatchComputePipeline {
         DispatchComputePipeline::custom(super::compute::create(&self.shared, desc))
@@ -116,12 +122,12 @@ impl DeviceInterface for MetalDevice {
         DispatchTexture::custom(texture)
     }
     fn create_external_texture(&self, _: &wgpu::ExternalTextureDescriptor<'_>, _: &[&wgpu::TextureView]) -> DispatchExternalTexture {
-        unimplemented!("RUNE_GPU_BACKEND=metal: external textures")
+        super::unsupported!("external textures")
     }
     fn create_blas(&self, _: &wgpu::CreateBlasDescriptor<'_>, _: wgpu::BlasGeometrySizeDescriptors) -> (Option<u64>, DispatchBlas) {
-        unimplemented!("RUNE_GPU_BACKEND=metal: ray tracing")
+        super::unsupported!("ray tracing")
     }
-    fn create_tlas(&self, _: &wgpu::CreateTlasDescriptor<'_>) -> DispatchTlas { unimplemented!("RUNE_GPU_BACKEND=metal: ray tracing") }
+    fn create_tlas(&self, _: &wgpu::CreateTlasDescriptor<'_>) -> DispatchTlas { super::unsupported!("ray tracing") }
     fn create_sampler(&self, desc: &wgpu::SamplerDescriptor<'_>) -> DispatchSampler {
         DispatchSampler::custom(MetalSampler::new(&self.shared.device, desc))
     }
@@ -132,7 +138,7 @@ impl DeviceInterface for MetalDevice {
         DispatchCommandEncoder::custom(MetalEncoder::new(self.shared.clone()))
     }
     fn create_render_bundle_encoder(&self, _: &wgpu::RenderBundleEncoderDescriptor<'_>) -> DispatchRenderBundleEncoder {
-        unimplemented!("RUNE_GPU_BACKEND=metal: render bundles")
+        super::unsupported!("render bundles")
     }
     fn set_device_lost_callback(&self, _: BoxDeviceLostCallback) {}
     fn on_uncaptured_error(&self, _: Arc<dyn wgpu::UncapturedErrorHandler>) {}

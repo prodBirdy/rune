@@ -19,8 +19,8 @@ const LABEL_GAP: f32 = 2.0;
 /// The drawing an edge routes through.
 pub(crate) struct Ctx<'a> {
     pub placed: &'a Placed,
-    /// Screen sizes and shapes per node.
-    pub sizes: &'a [[f32; 2]],
+    /// Screen sizes and shapes per node, then per subgraph an edge stops on ([`Ctx::cluster_ends`]).
+    pub sizes: Vec<[f32; 2]>,
     pub shapes: Vec<NodeShape>,
     /// Label box sizes per edge, in layout axes.
     pub labels: Vec<Option<[f32; 2]>>,
@@ -28,6 +28,10 @@ pub(crate) struct Ctx<'a> {
     pub across: bool,
     /// Edge ends per edge, `(from, to)` as the source wrote them.
     pub ends: Vec<(usize, usize)>,
+    /// Centres in layout axes, in the order of `sizes`.
+    centers: Vec<[f32; 2]>,
+    /// How many of `sizes` are nodes; the rest are subgraphs edges stop on.
+    real: usize,
     /// Node outlines in layout axes.
     outlines: Vec<Vec<[f32; 2]>>,
     /// Subgraph titles, `[x0, y0, x1, y1]` in layout axes.
@@ -46,10 +50,42 @@ pub(crate) struct Route {
 }
 
 impl<'a> Ctx<'a> {
-    pub(crate) fn new(placed: &'a Placed, sizes: &'a [[f32; 2]], shapes: Vec<NodeShape>, labels: Vec<Option<[f32; 2]>>, across: bool, ends: Vec<(usize, usize)>) -> Self {
+    pub(crate) fn new(placed: &'a Placed, sizes: &[[f32; 2]], shapes: Vec<NodeShape>, labels: Vec<Option<[f32; 2]>>, across: bool, ends: Vec<(usize, usize)>) -> Self {
         let swap = |p: [f32; 2]| if across { [p[1], p[0]] } else { p };
         let outlines = (0..sizes.len()).map(|v| outline(shapes[v], swap(placed.centers[v]), sizes[v]).into_iter().map(swap).collect()).collect();
-        Ctx { placed, sizes, shapes, labels, across, ends, outlines, titles: Vec::new() }
+        let centers = placed.centers.clone();
+        Ctx { placed, sizes: sizes.to_vec(), shapes, labels, across, ends, centers, real: sizes.len(), outlines, titles: Vec::new() }
+    }
+
+    /// Stops edge ends on subgraph borders, `[start, end]` per edge: each subgraph named joins as
+    /// a box the edge meets the way it meets a node, and that nodes keep clear of.
+    pub(crate) fn cluster_ends(mut self, on: &[[Option<usize>; 2]]) -> Self {
+        let mut boxes: Vec<(usize, usize)> = Vec::new();
+        for (i, ends) in on.iter().enumerate().take(self.ends.len()) {
+            for (k, c) in ends.iter().enumerate() {
+                let Some(b) = c.and_then(|c| self.placed.clusters.get(c).copied().filter(|b| *b != [0.0; 4]).map(|b| (c, b))) else { continue };
+                let v = match boxes.iter().find(|x| x.0 == b.0) {
+                    Some(&(_, v)) => v,
+                    None => {
+                        let [x0, y0, x1, y1] = b.1;
+                        let (c, size) = ([(x0 + x1) / 2.0, (y0 + y1) / 2.0], self.screen([x1 - x0, y1 - y0]));
+                        let shape = NodeShape::Rect;
+                        self.outlines.push(outline(shape, self.screen(c), size).into_iter().map(|p| self.screen(p)).collect());
+                        self.centers.push(c);
+                        self.sizes.push(size);
+                        self.shapes.push(shape);
+                        boxes.push((b.0, self.sizes.len() - 1));
+                        self.sizes.len() - 1
+                    }
+                };
+                if k == 0 {
+                    self.ends[i].0 = v;
+                } else {
+                    self.ends[i].1 = v;
+                }
+            }
+        }
+        self
     }
 
     /// Keeps edges and labels off subgraph titles, given as screen rects.
@@ -99,7 +135,7 @@ impl<'a> Ctx<'a> {
 
     /// The point on `v`'s outline straight along the rank axis from `x`, on the side `s` points to.
     fn port(&self, v: usize, x: f32, s: f32) -> [f32; 2] {
-        let c = self.placed.centers[v];
+        let c = self.centers[v];
         let x = x.clamp(c[0] - self.port_reach(v), c[0] + self.port_reach(v));
         let poly = &self.outlines[v];
         let mut best: Option<f32> = None;
@@ -124,7 +160,7 @@ impl<'a> Ctx<'a> {
 
     /// Whether `p` keeps `gap` away from node `v`.
     fn clear_of(&self, v: usize, p: [f32; 2], gap: f32) -> bool {
-        let (c, s) = (self.placed.centers[v], self.size(v));
+        let (c, s) = (self.centers[v], self.size(v));
         if (p[0] - c[0]).abs() > s[0] / 2.0 + gap || (p[1] - c[1]).abs() > s[1] / 2.0 + gap {
             return true;
         }
@@ -153,7 +189,7 @@ impl<'a> Ctx<'a> {
             .collect();
         let boxes: Vec<[f32; 4]> = self.label_boxes(edge).collect();
         pts.iter().all(|&p| {
-            (0..self.sizes.len()).all(|v| v == ends.0 || v == ends.1 || self.clear_of(v, p, NODE_GAP))
+            (0..self.real).all(|v| v == ends.0 || v == ends.1 || self.clear_of(v, p, NODE_GAP))
                 && boxes.iter().all(|r| p[0] < r[0] || p[0] > r[2] || p[1] < r[1] || p[1] > r[3])
         })
     }
@@ -172,8 +208,15 @@ impl<'a> Ctx<'a> {
         let mut anchors = self.anchors(i, &path, twin, None);
         let mut at = label;
         if let (Some(l), Some(size), false) = (label, self.labels[i], twin) {
-            let on = along(&curve(&anchors), l[1]).map(|x| [x, l[1]]);
-            match on.filter(|&p| self.label_fits(i, p, size)) {
+            // The label sits on the line where it crosses the label's rank, if the line runs
+            // straight through it there; a slanted line would jog across the gap.
+            let line = curve(&anchors);
+            let upright = |p: &[f32; 2]| match (along(&line, p[1] - size[1] / 2.0), along(&line, p[1] + size[1] / 2.0)) {
+                (Some(a), Some(b)) => (a - b).abs() < 1.0,
+                _ => false,
+            };
+            let on = along(&line, l[1]).map(|x| [x, l[1]]);
+            match on.filter(|p| upright(p) && self.label_fits(i, *p, size)) {
                 Some(p) => at = Some(p),
                 None => {
                     anchors = self.anchors(i, &path, false, label_at);
@@ -239,7 +282,7 @@ impl<'a> Ctx<'a> {
         // Ports face what they now connect to: straight down when both nodes can meet, else
         // as close to straight as each allows.
         let m = out.len();
-        let (c0, c1) = (self.placed.centers[from][0], self.placed.centers[to][0]);
+        let (c0, c1) = (self.centers[from][0], self.centers[to][0]);
         let (r0, r1) = (self.port_reach(from), self.port_reach(to));
         let (lo, hi) = ((c0 - r0).max(c1 - r1), (c0 + r0).min(c1 + r1));
         let wanted = if m == 2 && lo <= hi {
@@ -262,7 +305,7 @@ impl<'a> Ctx<'a> {
         } else {
             // Each end on its own: the port nearest straight at its neighbour that stays clear.
             let near = |v: usize, toward: [f32; 2], s: f32, first: bool| {
-                let (c, r) = (self.placed.centers[v][0], self.port_reach(v));
+                let (c, r) = (self.centers[v][0], self.port_reach(v));
                 let mut xs: Vec<f32> = (0..=8).map(|k| c - r + 2.0 * r * k as f32 / 8.0).chain([toward[0].clamp(c - r, c + r)]).collect();
                 xs.sort_by(|a, b| (a - toward[0]).abs().total_cmp(&(b - toward[0]).abs()));
                 xs.into_iter().map(|x| self.port(v, x, s)).find(|&p| if first { self.clear(i, p, toward, ends) } else { self.clear(i, toward, p, ends) })
@@ -283,7 +326,7 @@ impl<'a> Ctx<'a> {
     fn direct(&self, i: usize, path: &[[f32; 2]], s0: f32, s1: f32) -> Option<[[f32; 2]; 2]> {
         const TRIES: usize = 16;
         let (from, to) = self.ends[i];
-        let (c0, c1) = (self.placed.centers[from][0], self.placed.centers[to][0]);
+        let (c0, c1) = (self.centers[from][0], self.centers[to][0]);
         let (r0, r1) = (self.port_reach(from), self.port_reach(to));
         let mut xs: Vec<f32> = path[1..path.len() - 1].iter().map(|p| p[0]).collect();
         xs.extend([c0, c1, c0 - r0, c0 + r0, c1 - r1, c1 + r1]);
@@ -301,8 +344,8 @@ impl<'a> Ctx<'a> {
     fn label_fits(&self, i: usize, p: [f32; 2], size: [f32; 2]) -> bool {
         let (hw, hh) = (size[0] / 2.0 + LABEL_GAP, size[1] / 2.0 + LABEL_GAP);
         let corners = [[p[0] - hw, p[1] - hh], [p[0] + hw, p[1] - hh], [p[0] + hw, p[1] + hh], [p[0] - hw, p[1] + hh], p];
-        let nodes_ok = (0..self.sizes.len()).all(|v| {
-            let (c, s) = (self.placed.centers[v], self.size(v));
+        let nodes_ok = (0..self.real).all(|v| {
+            let (c, s) = (self.centers[v], self.size(v));
             let apart = (p[0] - c[0]).abs() > hw + s[0] / 2.0 || (p[1] - c[1]).abs() > hh + s[1] / 2.0;
             apart || (corners.iter().all(|&q| !inside(&self.outlines[v], q)) && self.outlines[v].iter().all(|q| (q[0] - p[0]).abs() > hw || (q[1] - p[1]).abs() > hh))
         });

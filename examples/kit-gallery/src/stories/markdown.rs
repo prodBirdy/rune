@@ -593,3 +593,88 @@ pub(super) fn markdown_streaming(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
         )
         .child(Markdown::new(&MARKDOWN[..end]).reveal(0.18).streaming(end < MARKDOWN.len()).build(k))
 }
+
+/// A reply streaming in a chunk a press, each ending inside markup: an open emphasis, code or
+/// strike span draws styled, never its markers, and the table's header line waits to be a table
+/// rather than laying out as a paragraph first. Each press also starts a block, so it draws.
+const TAIL_STREAM: [&str; 5] = [
+    "Open **Settings ›",
+    " Appearance** and pick *Dark*.\n\n- run `theme",
+    " dark`\n- then ~~restart",
+    "~~ nothing\n\nChanged:\n\n| File",
+    " | Change |\n|---|---|\n| theme.rs | dark |\n",
+];
+
+pub(super) fn markdown_stream_tail(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    let n: usize = s.picked("md-tail-stream", "0").parse().unwrap_or(0);
+    let src = TAIL_STREAM[..n.min(TAIL_STREAM.len())].concat();
+    col().w(560.0).gap(12.0)
+        .child(
+            Button::new("Stream more")
+                .on_press(move |s: &mut G| {
+                    s.pick.insert("md-tail-stream".into(), (n + 1).to_string());
+                })
+                .build(k)
+                .key("stream-more"),
+        )
+        .child(Markdown::new(src).streaming(n < TAIL_STREAM.len()).build(k))
+}
+
+/// A reply streaming in with a flowchart and a sequence diagram: each "Stream more" adds lines up
+/// to the next one that draws something (a fence, its header or a blank line draws nothing).
+const DIAGRAM_STREAM: &str = r#"Here's the flow:
+
+```mermaid
+flowchart LR
+    A[Request] --> B{Cached?}
+    B -->|yes| C[Serve]
+    B -->|no| D[Fetch]
+    D --> E[(Store)]
+    E --> C
+```
+
+And who talks to whom:
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant A as App
+    participant S as Server
+    U->>A: Open
+    A->>S: GET /items
+    S-->>A: 200 OK
+    A-->>U: Show list
+```
+"#;
+
+pub(super) fn markdown_mermaid_streaming(s: &G, k: &Kit, _: &mut Vec<El>) -> El {
+    let end: usize = s.picked("md-diagram-stream", "0").parse().unwrap_or(0).min(DIAGRAM_STREAM.len());
+    let style = MarkdownStyle::from_kit(k).diagram_max_width(560.0);
+    col().w(560.0).gap(12.0)
+        .child(
+            Button::new("Stream more")
+                .on_press(move |s: &mut G| {
+                    s.pick.insert("md-diagram-stream".into(), next_drawn_line(DIAGRAM_STREAM, end).to_string());
+                })
+                .build(k)
+                .key("stream-more"),
+        )
+        .child(Markdown::new(&DIAGRAM_STREAM[..end]).style(style).streaming(end < DIAGRAM_STREAM.len()).build(k))
+}
+
+/// The end of the first line after `from` that draws something, taking any quiet lines before it
+/// (and the quiet lines that end the reply, so the last press also closes its fence).
+fn next_drawn_line(src: &str, from: usize) -> usize {
+    let quiet = |line: &str| {
+        let t = line.trim();
+        t.is_empty() || t.starts_with("```") || t == "flowchart LR" || t == "sequenceDiagram"
+    };
+    let mut at = from;
+    for line in src[from..].split_inclusive('\n') {
+        at += line.len();
+        if !quiet(line) {
+            break;
+        }
+    }
+    if src[at..].split_inclusive('\n').all(quiet) { src.len() } else { at }
+}

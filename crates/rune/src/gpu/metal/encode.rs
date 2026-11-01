@@ -272,7 +272,7 @@ impl CommandEncoderInterface for MetalEncoder {
         DispatchCommandBuffer::custom(MetalCommandBuffer(Mutex::new(recorded)))
     }
     fn clear_texture(&self, _: &DispatchTexture, _: &wgpu::ImageSubresourceRange) {
-        unimplemented!("RUNE_GPU_BACKEND=metal: CommandEncoder::clear_texture")
+        super::unsupported!("CommandEncoder::clear_texture")
     }
     fn clear_buffer(&self, target: &DispatchBuffer, offset: wgpu::BufferAddress, size: Option<wgpu::BufferAddress>) {
         let raw = buffer(target).store.gpu_write();
@@ -285,7 +285,7 @@ impl CommandEncoderInterface for MetalEncoder {
     fn insert_debug_marker(&self, _: &str) {}
     fn push_debug_group(&self, _: &str) {}
     fn pop_debug_group(&self) {}
-    fn write_timestamp(&self, _: &DispatchQuerySet, _: u32) { unimplemented!("RUNE_GPU_BACKEND=metal: timestamps between passes") }
+    fn write_timestamp(&self, _: &DispatchQuerySet, _: u32) { super::unsupported!("timestamps between passes") }
     fn resolve_query_set(&self, set: &DispatchQuerySet, first: u32, count: u32, destination: &DispatchBuffer, offset: wgpu::BufferAddress) {
         if count == 0 { return }
         let set = set.as_custom::<QuerySet>().expect("a Metal query set").raw.clone();
@@ -296,10 +296,10 @@ impl CommandEncoderInterface for MetalEncoder {
         rec.keep([set as _, dst as _]);
     }
     fn mark_acceleration_structures_built<'a>(&self, _: &mut dyn Iterator<Item = &'a wgpu::Blas>, _: &mut dyn Iterator<Item = &'a wgpu::Tlas>) {
-        unimplemented!("RUNE_GPU_BACKEND=metal: ray tracing")
+        super::unsupported!("ray tracing")
     }
     fn build_acceleration_structures<'a>(&self, _: &mut dyn Iterator<Item = &'a wgpu::BlasBuildEntry<'a>>, _: &mut dyn Iterator<Item = &'a wgpu::Tlas>) {
-        unimplemented!("RUNE_GPU_BACKEND=metal: ray tracing")
+        super::unsupported!("ray tracing")
     }
     fn transition_resources<'a>(&mut self, _: &mut dyn Iterator<Item = wgpu::wgt::BufferTransition<&'a DispatchBuffer>>,
         _: &mut dyn Iterator<Item = wgpu::wgt::TextureTransition<&'a DispatchTexture>>) {}

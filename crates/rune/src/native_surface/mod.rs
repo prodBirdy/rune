@@ -5,6 +5,8 @@
 #[cfg(test)]
 #[path = "tests.rs"]
 mod gpu_tests;
+#[cfg(test)]
+mod place_tests;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(target_os = "linux")]
@@ -12,6 +14,7 @@ pub mod linux;
 #[cfg(target_os = "windows")]
 pub mod win32;
 mod pipeline;
+pub(crate) mod place;
 pub use pipeline::SurfaceRenderer;
 use std::sync::{Arc, Mutex};
 use crate::time::Instant;
@@ -144,7 +147,7 @@ struct State {
 }
 /// Clones share a single bounded slot; pushing never queues frames behind the decoder.
 #[derive(Clone, Default)]
-pub struct NativeSurface(Arc<Mutex<State>>);
+pub struct NativeSurface(Arc<Mutex<State>>, place::SurfacePlace);
 impl std::fmt::Debug for NativeSurface {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("NativeSurface").field(&self.key()).finish()
@@ -153,6 +156,13 @@ impl std::fmt::Debug for NativeSurface {
 impl NativeSurface {
     pub fn new() -> Self {
         Self::default()
+    }
+    /// A handle to the same frames that draws with `place`; the element sets it per draw.
+    pub(crate) fn placed(&self, place: place::SurfacePlace) -> Self {
+        NativeSurface(self.0.clone(), place)
+    }
+    pub(crate) fn place(&self) -> place::SurfacePlace {
+        self.1
     }
     pub(crate) fn with_video(video: Arc<crate::video::Shared>) -> Self {
         let surface = Self::default();

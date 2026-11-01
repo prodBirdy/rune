@@ -34,6 +34,25 @@ impl<S: 'static> Runtime<S> {
         queued
     }
 
+    /// Notes each list's rows drawn inside its viewport on the last frame, so the next window
+    /// keeps them mounted while they're still on screen.
+    pub(super) fn note_drawn_rows(&mut self) {
+        if self.virtuals.is_empty() { return; }
+        // The last frame's rects describe these nodes only until a commit replaces them.
+        let fresh = self.built && self.drawn.len() == self.nodes.len();
+        let (nodes, drawn) = (&self.nodes, &self.drawn);
+        let at = |path: &str| self.path_ids.get(path).and_then(|id| self.node_index.get(id)).copied().filter(|&i| nodes.get(i).is_some_and(|n| n.path == path));
+        for (path, v) in self.virtuals.iter_mut() {
+            v.drawn.clear();
+            let (true, Some(list), Some(view)) = (fresh, at(path), at(&v.scroll_path)) else { continue };
+            let (top, bottom) = (drawn[view][1], drawn[view][1] + drawn[view][3]);
+            let rows = (list + 1..nodes.len()).take_while(|&j| nodes[j].parent >= Some(list)).filter(|&j| nodes[j].parent == Some(list));
+            for j in rows.filter(|&j| drawn[j][3] > 0.0 && drawn[j][1] < bottom && drawn[j][1] + drawn[j][3] > top) {
+                v.drawn.extend(nodes[j].key.clone());
+            }
+        }
+    }
+
     pub(super) fn wants_window(&self, path: &str, v: &crate::el::virtual_list::VirtualList) -> bool {
         let Some(&i) = self.path_ids.get(path).and_then(|id| self.node_index.get(id)) else { return false };
         if self.subtree_exiting(i) { return false; }

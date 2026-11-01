@@ -29,7 +29,7 @@ fn curves_leave_and_arrive_along_the_rank_axis() {
 
 #[test]
 fn flowchart_edges_draw_without_kinks() {
-    let src = "flowchart TD\n  A[Audio] --> B[Parakeet writes text<br/>'went to the avatar']\n  B --> C{Any word that looks<br/>or sounds like a term?}\n  C -- no --> F[Paste as is]\n  C -- \"avatar ≈ Abattoir\" --> D[Score the same audio twice:<br/>as 'avatar' and as 'Abattoir']\n  D --> E{Abattoir score + boost<br/>≥ avatar score?}\n  E -- yes --> G[Write Abattoir]\n  E -- no --> F";
+    let src = "flowchart TD\n  A[Audio] --> B[Parakeet writes text<br/>'went to the capuchin']\n  B --> C{Any word that looks<br/>or sounds like a term?}\n  C -- no --> F[Paste as is]\n  C -- \"capuchin ≈ Cappuccino\" --> D[Score the same audio twice:<br/>as 'capuchin' and as 'Cappuccino']\n  D --> E{Cappuccino score + boost<br/>≥ capuchin score?}\n  E -- yes --> G[Write Cappuccino]\n  E -- no --> F";
     let paint = DiagramStyle::neutral(true);
     let Some(crate::Parsed { diagram: crate::Diagram::Flowchart(f), .. }) = crate::parse(src) else { panic!() };
     let c = crate::flowchart::draw_canvas(&f, &paint, Some((crate::Hover::Edges, paint.text))).expect("draws");
@@ -63,7 +63,7 @@ fn arrows_point_into_the_node_they_reach() {
 #[test]
 fn long_edges_stay_clear_of_the_nodes_they_pass() {
     let paint = DiagramStyle::neutral(true);
-    let src = "flowchart TD\n  A[Audio] --> B[Parakeet writes text]\n  B --> C{Any word that looks<br/>or sounds like a term?}\n  C -- no --> F[Paste as is]\n  C -- \"avatar ≈ Abattoir\" --> D[Score the same audio twice:<br/>as 'avatar' and as 'Abattoir']\n  D --> E{Abattoir score + boost<br/>≥ avatar score?}\n  E -- yes --> G[Write Abattoir]\n  E -- no --> F";
+    let src = "flowchart TD\n  A[Audio] --> B[Parakeet writes text]\n  B --> C{Any word that looks<br/>or sounds like a term?}\n  C -- no --> F[Paste as is]\n  C -- \"capuchin ≈ Cappuccino\" --> D[Score the same audio twice:<br/>as 'capuchin' and as 'Cappuccino']\n  D --> E{Cappuccino score + boost<br/>≥ capuchin score?}\n  E -- yes --> G[Write Cappuccino]\n  E -- no --> F";
     let Some(crate::Parsed { diagram: crate::Diagram::Flowchart(f), .. }) = crate::parse(src) else { panic!() };
     let c = crate::flowchart::draw_canvas(&f, &paint, Some((crate::Hover::Edges, paint.text))).expect("draws");
     let (d, e) = (&c.regions[4], &c.regions[5]);

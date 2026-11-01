@@ -68,6 +68,43 @@ pub(crate) fn glyph(q: &GlyphQuad, fill: [f32; 4], clip: [f32; 4], fade: [f32; 4
     }
 }
 
+/// An icon's `KIND_GLYPH` instance at `pos` with drawn side `drawn`. At an unrotated, whole-pixel
+/// 1:1 placement it loads texels directly (`span == 0`); when fractional, scaled or turned it
+/// expands one texel into the icon's transparent atlas border so bilinear filtering neither clips
+/// at `KIND_GLYPH`'s quad edge nor bleeds across the shelf gutter.
+pub(crate) fn icon_inst(
+    q: &GlyphQuad,
+    pos: [f32; 2],
+    drawn: f32,
+    turn: f32,
+    fill: [f32; 4],
+    clip: [f32; 4],
+    fade: [f32; 4],
+) -> Instance {
+    let (uv, page) = glyph_uv_page(q.uv);
+    let px = q.rect[2].max(1.0);
+    let near = |v: f32| (v - v.round()).abs() < 1.0 / 512.0;
+    let (rect, uv) = if turn == 0.0 && near(pos[0]) && near(pos[1]) && (drawn - px).abs() < 1.0 / 512.0 {
+        ([pos[0].round(), pos[1].round(), px, px], [uv[0], uv[1], 0.0, 0.0])
+    } else {
+        let t = drawn / px;
+        (
+            [pos[0] - t, pos[1] - t, drawn + 2.0 * t, drawn + 2.0 * t],
+            [uv[0] - 1.0, uv[1] - 1.0, px + 2.0, px + 2.0],
+        )
+    };
+    Instance {
+        rect,
+        radii: [0.0; 4],
+        fill,
+        border: [0.0; 4],
+        params: [turn, KIND_GLYPH, page, 1.0],
+        uv,
+        clip,
+        fade: crate::render::pack_fade(fade, clip, clip),
+    }
+}
+
 pub(crate) fn premul(c: Color, opacity: f32, srgb: bool) -> [f32; 4] {
     if srgb { c.premul_srgb(opacity) } else { c.premul(opacity) }
 }

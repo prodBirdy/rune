@@ -6,11 +6,16 @@ use objc2_metal::{MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommand
 use super::resource::{MetalBuffer, MetalTexture};
 use super::*;
 
+// The libc crate declares it for macOS only; iOS's libSystem has it too.
+unsafe extern "C" {
+    fn proc_pid_rusage(pid: libc::c_int, flavor: libc::c_int, buffer: *mut libc::c_void) -> libc::c_int;
+}
+
 fn instructions() -> u64 {
     // SAFETY: proc_pid_rusage fills the rusage_info_v4 it is handed for RUSAGE_INFO_V4.
     unsafe {
         let mut info: libc::rusage_info_v4 = std::mem::zeroed();
-        assert_eq!(libc::proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V4, (&raw mut info).cast()), 0);
+        assert_eq!(proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V4, (&raw mut info).cast()), 0);
         info.ri_instructions
     }
 }

@@ -7,6 +7,7 @@ impl<S: 'static> Runtime<S> {
     pub(super) fn apply(&mut self, measured: Measured, tx: &Tx) {
         let _apply_time = crate::frame::profile::Scope::new(crate::frame::profile::Phase::Apply);
         let Measured { layout: taffy, mut nodes, reduced_motion, time_scale, caret_read, memo_flattened, memo_reused, .. } = measured;
+        if crate::tooling::interaction::active() { self.interaction_reused(&memo_reused); }
         let mut scratch = std::mem::take(&mut self.apply_scratch);
         self.caret_watch = caret_read;
         let reduced_motion_unchanged = reduced_motion == self.reduced_motion;
@@ -191,6 +192,7 @@ impl<S: 'static> Runtime<S> {
             let pad_top = rows.first().map_or(stack.pad_top, |&j| nodes[j].target[1] - ctop);
             stack.pad_bottom = rows.last().map_or(nodes[c].target[3] - ctop - pad_top, |&j| nodes[c].target[3] - nodes[j].target[3]);
             stack.pad_top = pad_top;
+            let (mut hidden_cut, mut reopened, mut held) = (0.0, Vec::new(), Vec::new());
             for &j in rows {
                 let id = nodes[j].id;
                 let mut h = nodes[j].target[3] - nodes[j].target[1];
@@ -214,13 +216,14 @@ impl<S: 'static> Runtime<S> {
                     }
                 }
                 let (duration, glide) = (tx.motion.map_or(0.0, |m| m.duration * 1.15), nodes[j].glide.map(|s| (s, self.fold_limit(id))));
+                let hidden = if glide.is_some() { self.fold_hidden_above(&nodes, j, h) } else { None };
                 let g = self.grows.entry(id).or_insert_with(|| {
                     if existed && !instant && !nodes[j].virtual_mount { GrowTrack { streaming, whole, duration, ..GrowTrack::settled(0.0) } } else { GrowTrack::settled(h) }
                 });
                 g.set_kind(streaming, whole, glide);
                 let snap_change = (instant || resized) && !streaming && (h - g.target).abs() > 1e-4;
                 if tx.settle || !existed || first || self.reduced_motion || snap_change || row_reading {
-                    *g = GrowTrack { streaming, whole, glide: g.glide, limit: g.limit, ..GrowTrack::settled(h) };
+                    *g = GrowTrack { streaming, whole, glide: g.glide, feather: g.feather, limit: g.limit, ..GrowTrack::settled(h) };
                     stack.pending_heights.remove(&id);
                     stack.slides.land(id);
                 } else {
@@ -232,10 +235,21 @@ impl<S: 'static> Runtime<S> {
                     } else {
                         stack.pending_heights.remove(&id);
                         if (t - g.target).abs() > 1e-4 { g.duration = duration; }
+                        let shutting = t < g.target - 1e-4;
+                        if t > g.target + 1e-4 && g.lift() > 0.0 { reopened.push((j, g.give.is_some())); }
+                        let before = g.h;
                         g.retarget(t);
+                        if let Some((above, header)) = hidden.filter(|_| shutting && g.shutting_fold()) {
+                            held.push((id, before - g.h));
+                            hidden_cut += g.hide_above(above);
+                            self.fold_headers.insert(id, header);
+                        }
                     }
                 }
             }
+            if hidden_cut > 0.0 { self.scroll_by_cut(&nodes, c, hidden_cut); }
+            if !held.is_empty() { self.give_way(&nodes, c, &std::mem::take(&mut held)); }
+            for (j, giving) in reopened.drain(..) { self.ride_from_end(&nodes, c, j, giving); }
             if let Some(&last) = rows.last()
                 && !self.scene.contains(nodes[last].id)
                 && let Some(s) = std::iter::successors(nodes[c].parent, |&p| nodes[p].parent)
@@ -786,7 +800,7 @@ impl<S: 'static> Runtime<S> {
                 sticky |= c.sticky.as_ref().is_some_and(|s| s.edge.is_some());
                 any_loop |= c.looping.is_some();
             }
-            drawn_ly |= n.handlers.get().is_some_and(|h| h.on_drawn_layout.is_some());
+            drawn_ly |= n.handlers.get().is_some_and(|h| h.on_drawn_layout.is_some() || h.drawn_rect.is_some());
             key_up |= n.focus.get().is_some_and(|f| f.key_up.is_some());
             raise |= n.vis.raise;
         }

@@ -67,6 +67,7 @@ pub(crate) fn headless_configured<S: 'static>(mut app: crate::app::App<S>, args:
     if args.snap_on_patch.is_some() {
         return crate::hot::snap_window(app, args);
     }
+    crate::tooling::interaction::gate::headless();
     let mut comp = app.compositor.take();
     let (srgb_blend, font_smoothing) = (app.srgb_blend, app.font_smoothing);
     let (on_focus, on_ime) = (app.on_focus, app.on_ime);
@@ -130,7 +131,7 @@ pub(crate) fn headless_configured<S: 'static>(mut app: crate::app::App<S>, args:
 
     let t0 = Instant::now();
     let features = comp.as_ref().map_or(wgpu::Features::empty(), |c| c.features());
-    let gpu = Gpu::try_with_features(Gpu::instance(), None, features).unwrap_or_else(|e| die(&e));
+    let gpu = Gpu::try_with_features(Gpu::instance_for(features), None, features).unwrap_or_else(|e| die(&e));
     let mut target_format = if srgb_blend { OFFSCREEN_FORMAT.remove_srgb_suffix() } else { OFFSCREEN_FORMAT };
     let mut renderer = Renderer::new(&gpu.device, target_format);
     renderer.set_srgb_blend(srgb_blend);
@@ -360,6 +361,7 @@ pub(crate) fn headless_configured<S: 'static>(mut app: crate::app::App<S>, args:
             readback.copy(&mut enc, &target, shot);
         }
         renderer.submit(&gpu.queue, enc);
+        rt.interaction_presented(Instant::now(), None);
         if want_pixels { readback.submitted(); }
         let ms = frame_start.elapsed().as_secs_f64() * 1000.0;
         #[cfg(feature = "frame-profile")]
@@ -411,6 +413,7 @@ pub(crate) fn headless_configured<S: 'static>(mut app: crate::app::App<S>, args:
         }
     }
     for (shot, px) in readback.finish(&gpu.device) { deliver(shot, px); }
+    rt.interaction_flush();
     drop(deliver);
     let written = frames_written;
     if let Some(video) = writer.finish().unwrap_or_else(|e| die(&e)) {

@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{Span, TextSystem};
+use super::{RichLayoutOptions, Span, TextSystem};
 
 mod ink;
 pub use ink::{TextInk, ink};
@@ -167,8 +167,21 @@ pub fn with_families(sans: &str, mono: &str) -> FamiliesGuard {
 /// The first call on a thread loads the fonts (a few milliseconds); later calls cost a hash
 /// lookup when the same text was measured recently, or one shaping pass when not.
 pub fn measure(text: &str, spans: &[Span], style: TextStyle, max_width: Option<f32>) -> (f32, f32) {
+    measure_with(text, spans, style, max_width, RichLayoutOptions::default())
+}
+
+/// [`measure`] laid out with [`RichLayoutOptions`], so text that an [`El`](crate::El) draws with
+/// [`wrap_anywhere`](crate::El::wrap_anywhere) measures to the lines it will actually take:
+/// `measure_with(text, &[], style, Some(w), RichLayoutOptions::new().wrap_anywhere())`.
+pub fn measure_with(
+    text: &str,
+    spans: &[Span],
+    style: TextStyle,
+    max_width: Option<f32>,
+    options: RichLayoutOptions,
+) -> (f32, f32) {
     with_text(|t| {
-        let l = t.layout_rich(text, spans, style, 1.0, max_width);
+        let l = t.layout_rich_with(text, spans, style, 1.0, max_width, options);
         (l.full_width().ceil(), super::layout_height(&l, style, 1.0))
     })
 }
@@ -225,5 +238,16 @@ mod tests {
         let mut bold = Span::new(0, 5);
         bold.weight = Some(700.0);
         assert!(measure("Hello world", &[bold], style, None).0 > w);
+    }
+
+    #[test]
+    fn wrap_anywhere_measures_a_long_token_onto_more_lines() {
+        let style = TextStyle::new(14.0, 400.0);
+        let link = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let (plain_w, plain_h) = measure(link, &[], style, Some(120.0));
+        let (w, h) = measure_with(link, &[], style, Some(120.0), RichLayoutOptions::new().wrap_anywhere());
+        assert!(plain_w > 120.0, "without wrap_anywhere the token runs past the width: {plain_w}");
+        assert!(w <= 120.0 && h > plain_h * 2.0, "{w} {h} vs {plain_w} {plain_h}");
+        assert_eq!(measure(link, &[], style, Some(120.0)), measure_with(link, &[], style, Some(120.0), RichLayoutOptions::new()));
     }
 }

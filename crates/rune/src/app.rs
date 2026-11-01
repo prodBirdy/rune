@@ -302,11 +302,14 @@ impl<S: 'static> App<S> {
         self
     }
 
-    /// Draws with `backend` on macOS; `GpuBackend::Metal` needs Rune's `metal-backend` feature.
-    /// `RUNE_GPU_BACKEND=wgpu` or `=metal` overrides it without a rebuild. It applies to every
-    /// GPU the process makes from here on, and a `prewarm_gpu` already running on the other
-    /// backend starts over on this one; call `rune::prewarm_gpu_on(backend)` first in `main`
-    /// instead of `prewarm_gpu()` to start it on this backend and avoid the restart. Does nothing elsewhere.
+    /// Draws with `backend` on macOS. Without a call, a Mac app draws with Rune's native Metal
+    /// backend (the `metal-backend` feature, on by default), so `GpuBackend::Wgpu` opts out;
+    /// `GpuBackend::Metal` needs the feature. `RUNE_GPU_BACKEND=wgpu` or `=metal` overrides it
+    /// without a rebuild. It applies to every GPU the process makes from here on, and a
+    /// `prewarm_gpu` already running on the other backend starts over on this one; an app that
+    /// opts out calls `rune::prewarm_gpu_on(GpuBackend::Wgpu)` first in `main` instead of
+    /// `prewarm_gpu()` to avoid the restart. An iOS app, which embeds a `LayerHost` instead,
+    /// calls `rune::prewarm_gpu_on`. Does nothing elsewhere.
     pub fn gpu_backend(self, backend: crate::GpuBackend) -> Self {
         crate::gpu::backend::choose(backend);
         self

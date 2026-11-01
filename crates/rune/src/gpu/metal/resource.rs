@@ -54,7 +54,7 @@ pub(crate) fn pixel_format(format: wgpu::TextureFormat) -> MTLPixelFormat {
         F::Rgba32Float => M::RGBA32Float,
         F::Depth32Float => M::Depth32Float,
         F::Depth16Unorm => M::Depth16Unorm,
-        other => unimplemented!("RUNE_GPU_BACKEND=metal: texture format {other:?}"),
+        other => super::unsupported!("texture format {other:?}"),
     }
 }
 
@@ -245,7 +245,7 @@ impl TextureRaw {
 
 impl MetalTexture {
     pub(crate) fn new(device: &Obj<dyn MTLDevice>, desc: &wgpu::TextureDescriptor<'_>, live: Live) -> Self {
-        assert_eq!(desc.sample_count, 1, "RUNE_GPU_BACKEND=metal: multisampled textures");
+        if desc.sample_count != 1 { super::unsupported!("multisampled textures") }
         let layers = if desc.dimension == wgpu::TextureDimension::D3 { 1 } else { desc.size.depth_or_array_layers };
         let raw = TextureRaw { raw: device_texture(device, desc, layers), format: desc.format, dimension: desc.dimension, layers,
             mips: desc.mip_level_count, drawable: false, owner: None, live: Some(live) };

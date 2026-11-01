@@ -121,7 +121,7 @@ pub(crate) fn draw(p: &Pie, paint: &DiagramStyle) -> Option<Scene> {
             c.label_at(v, [x + SWATCH + 16.0 + n.size[0], mid - v.size[1] / 2.0], paint.font, paint.muted, Align::Start);
         }
     }
-    c.finish(1.0)
+    c.finish(1.0, paint)
 }
 
 #[cfg(test)]

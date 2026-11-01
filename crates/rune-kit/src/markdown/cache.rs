@@ -19,8 +19,17 @@ pub(super) struct Cache {
     pub(super) last: Option<Rc<str>>,
 }
 
+impl Cache {
+    fn new(bytes: usize) -> Self {
+        Cache { docs: Budget::new(bytes), last: None }
+    }
+}
+
 thread_local! {
-    pub(super) static CACHE: RefCell<Cache> = RefCell::new(Cache { docs: Budget::new(CACHE_BYTES), last: None });
+    pub(super) static CACHE: RefCell<Cache> = RefCell::new(Cache::new(CACHE_BYTES));
+    /// Sources drawn while still arriving ([`Markdown::streaming`]), parsed with their tail
+    /// settled (see [`super::stream`]); kept apart, since the same string parses differently.
+    pub(super) static STREAMS: RefCell<Cache> = RefCell::new(Cache::new(CACHE_BYTES / 4));
 }
 
 #[cfg(test)]
@@ -36,31 +45,38 @@ pub fn parse_cached(src: &str) -> Rc<Vec<Block>> {
 }
 
 pub(super) fn doc_cached(src: &str) -> Doc {
-    CACHE.with_borrow_mut(|c| {
-        if let Some(hit) = c.docs.get(src) {
-            return hit.doc.clone();
-        }
-        let grown = c.last.clone().filter(|last| src.len() > last.len() && src.starts_with(&**last));
-        let parsed = grown.as_ref().and_then(|last| extend(c.docs.peek(&**last)?, last.len(), src)).unwrap_or_else(|| {
-            #[cfg(test)]
-            PARSES.with(|p| p.set((p.get().0 + 1, p.get().1)));
-            let (blocks, sources, tasks, cuts, starts, maps) = parse_doc(src, true);
-            Parsed { doc: (Rc::new(blocks), sources.into(), tasks.into(), starts.into(), maps.into()), cuts: cuts.into() }
-        });
-        // A stream's earlier string is dead once it grows, unless something drew it this
-        // commit; left in, a long stream would fill the budget with its prefixes.
-        if let Some(last) = grown
-            && !c.docs.used_now(&*last)
-        {
-            c.docs.remove(&*last);
-        }
-        let key: Rc<str> = src.into();
-        // Parsed text is about as long as its source, plus each block's bookkeeping.
-        let bytes = 2 * src.len() + 64 * parsed.cuts.len() + 128;
-        c.docs.insert(key.clone(), parsed.clone(), bytes);
-        c.last = Some(key);
-        parsed.doc
-    })
+    CACHE.with_borrow_mut(|c| cached(c, src, parse_doc))
+}
+
+/// [`doc_cached`] for a source still arriving.
+pub(super) fn stream_cached(src: &str) -> Doc {
+    STREAMS.with_borrow_mut(|c| cached(c, src, parse_streaming))
+}
+
+fn cached(c: &mut Cache, src: &str, parse: fn(&str, bool) -> ParsedDoc) -> Doc {
+    if let Some(hit) = c.docs.get(src) {
+        return hit.doc.clone();
+    }
+    let grown = c.last.clone().filter(|last| src.len() > last.len() && src.starts_with(&**last));
+    let parsed = grown.as_ref().and_then(|last| extend(c.docs.peek(&**last)?, last.len(), src, parse)).unwrap_or_else(|| {
+        #[cfg(test)]
+        PARSES.with(|p| p.set((p.get().0 + 1, p.get().1)));
+        let (blocks, sources, tasks, cuts, starts, maps) = parse(src, true);
+        Parsed { doc: (Rc::new(blocks), sources.into(), tasks.into(), starts.into(), maps.into()), cuts: cuts.into() }
+    });
+    // A stream's earlier string is dead once it grows, unless something drew it this
+    // commit; left in, a long stream would fill the budget with its prefixes.
+    if let Some(last) = grown
+        && !c.docs.used_now(&*last)
+    {
+        c.docs.remove(&*last);
+    }
+    let key: Rc<str> = src.into();
+    // Parsed text is about as long as its source, plus each block's bookkeeping.
+    let bytes = 2 * src.len() + 64 * parsed.cuts.len() + 128;
+    c.docs.insert(key.clone(), parsed.clone(), bytes);
+    c.last = Some(key);
+    parsed.doc
 }
 
 /// The parse of `src`, which extends the `base_len` bytes `base` parsed, reusing every
@@ -68,16 +84,17 @@ pub(super) fn doc_cached(src: &str) -> Doc {
 /// blocks after it. Whether a line starts a block can depend on the rest of that line (`|`
 /// ending a table that `| 1 |` would continue), so the reparse starts at the last block that
 /// starts on a finished line. A reference definition (`[x]: url`) can change links anywhere,
-/// so a source that may hold one parses whole.
-fn extend(base: &Parsed, base_len: usize, src: &str) -> Option<Parsed> {
-    let i = base.cuts.iter().rposition(|c| src[c.at..base_len].contains('\n'))?;
+/// so a source that may hold one parses whole. A stream's parse may have left its last lines
+/// out, so a cut is only ever at or before `base_len`.
+fn extend(base: &Parsed, base_len: usize, src: &str, parse: fn(&str, bool) -> ParsedDoc) -> Option<Parsed> {
+    let i = base.cuts.iter().rposition(|c| c.at <= base_len && src[c.at..base_len].contains('\n'))?;
     let cut = base.cuts[i];
     if cut.at == 0 || cut.blocks >= base.doc.0.len() || src.contains("]:") {
         return None;
     }
     #[cfg(test)]
     PARSES.with(|p| p.set((p.get().0, p.get().1 + 1)));
-    let (tail, sources, tasks, cuts, starts, maps) = parse_doc(&src[cut.at..], true);
+    let (tail, sources, tasks, cuts, starts, maps) = parse(&src[cut.at..], true);
     let mut blocks = base.doc.0[..cut.blocks].to_vec();
     blocks.extend(tail);
     let sources: Rc<[Source]> = base.doc.1[..cut.sources].iter().cloned().chain(sources).collect();

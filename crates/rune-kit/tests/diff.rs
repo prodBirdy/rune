@@ -664,6 +664,85 @@ fn focused_annotation_input_keeps_navigation_and_escape_keys() {
     assert_eq!(rt.state.diff.selection(), None);
 }
 
+/// The code cells' hover handler calls `Tx::live_only` when the copy side stays: debug builds
+/// check those events a quarter second after the last commit, and the rows' hover paint must
+/// not read as a view change.
+#[test]
+fn hovering_lines_at_rest_builds_nothing_new() {
+    for mode in [DiffMode::Unified, DiffMode::Split] {
+        let (old, new) = numbered(40, 3);
+        let mut d = DiffState::new(vec![FileDiff::from_texts("a.rs", &old, &new)]);
+        d.set_mode(mode);
+        let mut rt = runtime(d, (900.0, 1200.0));
+        let cells: Vec<[f32; 4]> = rt.elements().into_iter().filter(|e| e.path.ends_with("/code") && !e.exiting).map(|e| e.rect).collect();
+        assert!(cells.len() > 30, "{mode:?}: {} code cells", cells.len());
+        let checks = rt.live_only_events();
+        for (i, r) in cells.iter().enumerate() {
+            if i % 2 == 0 { rt.frame(0.3); }
+            rt.pointer_move(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+            tick(&mut rt);
+        }
+        assert!(rt.live_only_events() > checks, "{mode:?}: some moves skipped the view");
+        assert!(rt.live_only_warnings().is_empty(), "{mode:?}: {:#?}", rt.live_only_warnings());
+    }
+}
+
+/// A live-only event that changes nothing, checked at moments a person makes: while hovers
+/// fade across the lines, a scroll glides or a text selection is held. The view built before
+/// and after it must match.
+#[test]
+fn a_live_only_event_while_hovering_scrolling_or_selecting_builds_nothing_new() {
+    for (mode, wrap) in [(DiffMode::Unified, false), (DiffMode::Split, false), (DiffMode::Unified, true)] {
+        let (old, new) = numbered(400, 3);
+        let mut d = DiffState::new(vec![FileDiff::from_texts("a.rs", &old, &new)]);
+        d.set_mode(mode);
+        d.set_wrap(wrap);
+        let mut rt = runtime(d, (900.0, 600.0));
+        rt.on_key = Some(|_, _, tx| { tx.live_only(); true });
+        rt.check_live_only(false);
+        let probe = |rt: &mut Runtime<App>| {
+            rt.check_live_only(true);
+            rt.key(KeyEvent { key: Key::Function(5), mods: Mods::default() });
+            tick(rt);
+            rt.check_live_only(false);
+        };
+        let sweep = |rt: &mut Runtime<App>, x: f32| {
+            for i in 0..200 {
+                rt.pointer_move(x + (i % 5) as f32, 30.0 + (i as f32 * 7.3) % 560.0);
+                tick(rt);
+                if i % 20 == 19 { probe(rt); }
+            }
+        };
+        sweep(&mut rt, 300.0);
+        sweep(&mut rt, 700.0);
+        rt.wheel(400.0, 300.0, -900.0);
+        for _ in 0..3 { tick(&mut rt); }
+        probe(&mut rt);
+        sweep(&mut rt, 300.0);
+        rt.pointer_down(260.0, 210.0);
+        for i in 0..20 {
+            rt.pointer_move(260.0 + i as f32 * 12.0, 210.0 + i as f32 * 3.0);
+            tick(&mut rt);
+        }
+        probe(&mut rt);
+        rt.pointer_up(500.0, 270.0);
+        for _ in 0..20 { tick(&mut rt); }
+        probe(&mut rt);
+        sweep(&mut rt, 300.0);
+        assert!(rt.live_only_warnings().is_empty(), "{mode:?} wrap {wrap}: {:#?}", rt.live_only_warnings());
+        // The probe does compare: a handler that switches the mode is named.
+        rt.on_key = Some(|s, _, tx| {
+            s.diff.set_mode(if s.diff.mode() == DiffMode::Split { DiffMode::Unified } else { DiffMode::Split });
+            tx.live_only();
+            true
+        });
+        rt.frame(0.3);
+        probe(&mut rt);
+        assert_eq!(rt.live_only_warnings().len(), 1, "{mode:?} wrap {wrap}");
+        eprintln!("{}", rt.live_only_warnings()[0]);
+    }
+}
+
 /// `cargo test -p rune-kit --profile perf --test diff diff_50k_time -- --ignored --nocapture`
 #[test]
 #[ignore]

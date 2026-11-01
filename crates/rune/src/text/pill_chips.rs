@@ -107,7 +107,7 @@ pub(crate) fn pill_chips(
             if let Some(icon) = pill.icon {
                 let px = (pm.icon * scale).round().max(1.0);
                 let ix = if rtl_lead { rect[0] + rect[2] - pm.pad * scale - px } else { rect[0] + pm.pad * scale };
-                icons.push((icon, px as u32, [ix, ((top + bot - px) * 0.5).round()], pill.fg));
+                icons.push((icon, px as u32, [ix.round(), ((top + bot - px) * 0.5).round()], pill.fg));
             }
         }
     }

@@ -10,6 +10,7 @@ pub(crate) mod budget;
 mod commits;
 mod idle;
 pub(crate) mod launch;
+pub(crate) mod runq;
 
 #[cfg(debug_assertions)]
 pub(crate) use idle::Drawn;
@@ -23,12 +24,14 @@ pub(crate) struct Watch {
     /// `CommitWhy` bits for the commit underway; 0 for one outside a frame's checks.
     pub cause: u16,
     pub meter: CommitMeter,
+    /// Interaction timing (`tooling::interaction`), when it's on.
+    pub interaction: crate::tooling::interaction::Tracker,
 }
 
 #[cfg(debug_assertions)]
 use std::{collections::HashSet, sync::{Mutex, OnceLock}, time::Instant};
 
-/// Blocked wall time (ms) a callback may take before it warns, and how many times its CPU time
+/// Blocked wall time (ms; time waiting for a core doesn't count) a callback may take before it warns, and how many times its CPU time
 /// that wall time must also be. A callback that computes for 50 ms is slow but not blocked.
 #[cfg(debug_assertions)]
 const STALL_MS: f64 = 8.0;
@@ -95,7 +98,7 @@ pub(crate) fn memo_key_replaced(id: &str, existing: &str, site: &std::panic::Loc
 /// time blocked rather than computing.
 pub(crate) struct Stall {
     #[cfg(debug_assertions)]
-    start: Option<(Instant, f64)>,
+    start: Option<(Instant, f64, Option<f64>)>,
 }
 
 impl Stall {
@@ -103,7 +106,7 @@ impl Stall {
     pub(crate) fn start() -> Self {
         Stall {
             #[cfg(debug_assertions)]
-            start: if enabled() { crate::frame::profile::cpu_ms().map(|cpu| (Instant::now(), cpu)) } else { None },
+            start: if enabled() { crate::frame::profile::cpu_ms().map(|cpu| (Instant::now(), cpu, runq::wait_ms())) } else { None },
         }
     }
 
@@ -113,16 +116,20 @@ impl Stall {
     #[cfg_attr(not(debug_assertions), allow(unused_variables))]
     pub(crate) fn end(self, what: impl FnOnce() -> (String, String)) {
         #[cfg(debug_assertions)]
-        if let Some((wall, cpu)) = self.start {
+        if let Some((wall, cpu, wait)) = self.start {
             let wall = wall.elapsed().as_secs_f64() * 1000.0;
             if wall <= STALL_MS { return }
             let cpu = crate::frame::profile::cpu_ms().map_or(0.0, |now| now - cpu);
-            if wall <= STALL_CPU_RATIO * cpu { return }
+            let waited = wait.and_then(|start| runq::wait_ms().map(|now| now - start));
+            let Some(blocked) = runq::blocked_ms(wall, cpu, waited, waited.is_none() && runq::overloaded()) else { return };
             let (site, name) = what();
-            warn_once(format!("stall {site}"), || format!(
-                "{name} blocked {wall:.0} ms (CPU {cpu:.0} ms) on the main thread: move IO off it \
-                 with `rune::Latest` or a thread"
-            ));
+            warn_once(format!("stall {site}"), || {
+                let queued = waited.filter(|w| *w >= 1.0).map_or_else(String::new, |w| format!(", waited {w:.0} ms for a core"));
+                format!(
+                    "{name} blocked {blocked:.0} ms (CPU {cpu:.0} ms{queued}) on the main thread: move IO off it \
+                     with `rune::Latest` or a thread"
+                )
+            });
         }
     }
 }

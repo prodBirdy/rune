@@ -183,15 +183,15 @@ fn debug_check_does_not_blame_live_only_for_layout_feedback_before_a_key() {
 }
 
 #[test]
-fn retained_exit_pruning_does_not_change_the_view_fingerprint() {
+fn retained_exit_pruning_does_not_change_the_view_print() {
     let mut rt = app(false);
-    let before = rt.view_fingerprint();
+    let before = rt.view_print();
     let id = rt.nodes.last().unwrap().id;
     rt.scene.remove(id);
-    let exiting = rt.view_fingerprint();
-    assert_ne!(before, exiting);
+    let exiting = rt.view_print();
+    assert!(before.first_difference(&exiting).is_some());
     rt.scene.set_time(10.0); rt.scene.frame(); rt.prune_exited();
-    assert_eq!(exiting, rt.view_fingerprint());
+    assert_eq!(exiting.first_difference(&rt.view_print()), None);
 }
 
 #[test]

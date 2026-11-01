@@ -49,8 +49,8 @@ fn view(view: &wgpu::TextureView) -> &MetalView { view.as_custom::<MetalView>().
 
 impl MetalPass {
     pub(super) fn begin(rec: Arc<Mutex<Rec>>, desc: &wgpu::RenderPassDescriptor<'_>) -> Self {
-        assert!(desc.depth_stencil_attachment.is_none(), "RUNE_GPU_BACKEND=metal: depth and stencil");
-        assert!(desc.color_attachments.len() <= 4, "RUNE_GPU_BACKEND=metal: more than four color attachments");
+        if desc.depth_stencil_attachment.is_some() { super::unsupported!("depth and stencil") }
+        if desc.color_attachments.len() > 4 { super::unsupported!("more than four color attachments") }
         let d = MTLRenderPassDescriptor::new();
         let mut keep = rec.lock().shared().keep_list();
         let mut drawable = false;
@@ -69,7 +69,7 @@ impl MetalPass {
         }
         for (i, attachment) in desc.color_attachments.iter().enumerate() {
             let Some(attachment) = attachment else { continue };
-            assert!(attachment.resolve_target.is_none(), "RUNE_GPU_BACKEND=metal: multisample resolves");
+            if attachment.resolve_target.is_some() { super::unsupported!("multisample resolves") }
             let target = view(attachment.view).raw.clone();
             // SAFETY: at most four attachments, checked above.
             let color = unsafe { d.colorAttachments().objectAtIndexedSubscript(i) };
@@ -216,7 +216,7 @@ impl RenderPassInterface for MetalPass {
     }
     fn set_bind_group(&mut self, index: u32, group: Option<&DispatchBindGroup>, offsets: &[wgpu::DynamicOffset]) {
         let index = index as usize;
-        assert!(index < GROUPS, "RUNE_GPU_BACKEND=metal: bind group {index}");
+        if index >= GROUPS { super::unsupported!("bind group {index}") }
         let Some(group) = group else { self.groups[index] = None; return };
         let group = &group.as_custom::<super::layout::BindGroup>().expect("a Metal bind group").raw;
         if let Some((bound, bound_offsets)) = &self.groups[index]
@@ -284,33 +284,33 @@ impl RenderPassInterface for MetalPass {
                 instances.len(), base_vertex as isize, instances.start as usize)
         }
     }
-    fn draw_mesh_tasks(&mut self, _: u32, _: u32, _: u32) { unimplemented!("RUNE_GPU_BACKEND=metal: mesh shaders") }
-    fn draw_indirect(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress) { unimplemented!("RUNE_GPU_BACKEND=metal: indirect draws") }
-    fn draw_indexed_indirect(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress) { unimplemented!("RUNE_GPU_BACKEND=metal: indirect draws") }
-    fn draw_mesh_tasks_indirect(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress) { unimplemented!("RUNE_GPU_BACKEND=metal: mesh shaders") }
-    fn multi_draw_indirect(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress, _: u32) { unimplemented!("RUNE_GPU_BACKEND=metal: indirect draws") }
+    fn draw_mesh_tasks(&mut self, _: u32, _: u32, _: u32) { super::unsupported!("mesh shaders") }
+    fn draw_indirect(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress) { super::unsupported!("indirect draws") }
+    fn draw_indexed_indirect(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress) { super::unsupported!("indirect draws") }
+    fn draw_mesh_tasks_indirect(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress) { super::unsupported!("mesh shaders") }
+    fn multi_draw_indirect(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress, _: u32) { super::unsupported!("indirect draws") }
     fn multi_draw_indexed_indirect(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress, _: u32) {
-        unimplemented!("RUNE_GPU_BACKEND=metal: indirect draws")
+        super::unsupported!("indirect draws")
     }
     fn multi_draw_indirect_count(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress, _: &DispatchBuffer, _: wgpu::BufferAddress, _: u32) {
-        unimplemented!("RUNE_GPU_BACKEND=metal: indirect draws")
+        super::unsupported!("indirect draws")
     }
     fn multi_draw_mesh_tasks_indirect(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress, _: u32) {
-        unimplemented!("RUNE_GPU_BACKEND=metal: mesh shaders")
+        super::unsupported!("mesh shaders")
     }
     fn multi_draw_indexed_indirect_count(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress, _: &DispatchBuffer, _: wgpu::BufferAddress, _: u32) {
-        unimplemented!("RUNE_GPU_BACKEND=metal: indirect draws")
+        super::unsupported!("indirect draws")
     }
     fn multi_draw_mesh_tasks_indirect_count(&mut self, _: &DispatchBuffer, _: wgpu::BufferAddress, _: &DispatchBuffer, _: wgpu::BufferAddress, _: u32) {
-        unimplemented!("RUNE_GPU_BACKEND=metal: mesh shaders")
+        super::unsupported!("mesh shaders")
     }
     fn insert_debug_marker(&mut self, _: &str) {}
     fn push_debug_group(&mut self, _: &str) {}
     fn pop_debug_group(&mut self) {}
-    fn write_timestamp(&mut self, _: &DispatchQuerySet, _: u32) { unimplemented!("RUNE_GPU_BACKEND=metal: timestamps") }
-    fn begin_occlusion_query(&mut self, _: u32) { unimplemented!("RUNE_GPU_BACKEND=metal: occlusion queries") }
-    fn end_occlusion_query(&mut self) { unimplemented!("RUNE_GPU_BACKEND=metal: occlusion queries") }
-    fn begin_pipeline_statistics_query(&mut self, _: &DispatchQuerySet, _: u32) { unimplemented!("RUNE_GPU_BACKEND=metal: query sets") }
-    fn end_pipeline_statistics_query(&mut self) { unimplemented!("RUNE_GPU_BACKEND=metal: query sets") }
-    fn execute_bundles(&mut self, _: &mut dyn Iterator<Item = &DispatchRenderBundle>) { unimplemented!("RUNE_GPU_BACKEND=metal: render bundles") }
+    fn write_timestamp(&mut self, _: &DispatchQuerySet, _: u32) { super::unsupported!("timestamps") }
+    fn begin_occlusion_query(&mut self, _: u32) { super::unsupported!("occlusion queries") }
+    fn end_occlusion_query(&mut self) { super::unsupported!("occlusion queries") }
+    fn begin_pipeline_statistics_query(&mut self, _: &DispatchQuerySet, _: u32) { super::unsupported!("query sets") }
+    fn end_pipeline_statistics_query(&mut self) { super::unsupported!("query sets") }
+    fn execute_bundles(&mut self, _: &mut dyn Iterator<Item = &DispatchRenderBundle>) { super::unsupported!("render bundles") }
 }

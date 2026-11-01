@@ -5,7 +5,8 @@
 //! `Renderer::new`. Loading precompiled AIR bytecode via `Device::create_shader_module_passthrough`
 //! skips WGSL parsing, validation, MSL codegen, and the Metal front-end compile on every launch.
 //!
-//! Other shaders stay on WGSL:
+//! On wgpu's backend, other shaders stay on WGSL (Rune's own backend precompiles them too, in
+//! `gpu/metal/builtin.rs`):
 //! - `Renderer::with_springs`, `rune-fx`, and `rune-light` bind runtime-sized `var<storage>`
 //!   arrays (`_mslBufferSizes`), and `wgpu-hal` 30's `ShaderModuleSource::Passthrough` leaves
 //!   `CompiledShader::sized_bindings` empty.

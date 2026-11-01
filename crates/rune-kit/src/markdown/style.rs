@@ -188,12 +188,12 @@ impl MarkdownStyle {
             diagram: DiagramPaint {
                 text: c.text_base,
                 muted: c.text_muted,
-                surface: c.layer_01,
+                surface: c.bg_base,
                 surface_border: c.border_muted,
-                node_fill: c.bg_base,
-                node_border: k.alpha(c.text_base, 0.32),
-                line: k.alpha(c.text_base, 0.55),
-                cluster_fill: k.alpha(c.text_base, 0.04),
+                node_fill: c.layer_01,
+                node_border: k.alpha(c.text_base, 0.2),
+                line: k.alpha(c.text_base, 0.42),
+                cluster_fill: k.alpha(c.text_base, if k.dark { 0.04 } else { 0.025 }),
                 note_fill: c.warning.bg,
                 note_border: c.warning.border,
                 font: TextStyle { size: 13.0, line_height: 18.0, ..k.ty.body },
@@ -349,7 +349,9 @@ impl MarkdownStyle {
         self.diagram.line = line;
         self
     }
-    /// The card a diagram sits on, and the tint behind flowchart subgraphs.
+    /// The card a diagram sits on, and the tint behind flowchart subgraphs. Keep `fill` opaque:
+    /// translucent lines and outlines are flattened over it so they don't brighten where they
+    /// overlap. For no card, pass the colour behind the diagram with a clear `border`.
     pub fn diagram_surface(mut self, fill: Color, border: Color, subgraph: Color) -> Self {
         self.diagram.surface = fill;
         self.diagram.surface_border = border;
@@ -367,8 +369,9 @@ impl MarkdownStyle {
         self.diagram.font = f;
         self
     }
-    /// The widest a diagram draws, in points (680 by default). A wider left-to-right flowchart
-    /// is laid out top-down instead; anything still wider is drawn smaller, down to 60%.
+    /// The widest a diagram draws, in points (680 by default). A left-to-right flowchart that
+    /// would have to shrink below 78% to fit is laid out top-down instead, when that comes out
+    /// narrower; anything still wider is drawn smaller, down to 60%.
     pub fn diagram_max_width(mut self, points: f32) -> Self {
         self.diagram.max_width = points.max(120.0);
         self

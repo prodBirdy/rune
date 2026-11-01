@@ -1,0 +1,1 @@
+- `rune::text::measure_with(text, spans, style, max_width, RichLayoutOptions)` measures text with layout options, so text drawn with `El::wrap_anywhere` can be measured to the lines it takes; `measure` is `measure_with` with the default options.

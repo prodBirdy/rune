@@ -165,8 +165,9 @@ pub(crate) fn node_size(shape: NodeShape, t: [f32; 2]) -> [f32; 2] {
         S::Stadium | S::Hexagon => [w + h / 2.0, h],
         S::Subroutine | S::LinedRect | S::Card => [w + 16.0, h],
         S::Asymmetric => [w + h / 3.0, h],
-        S::Cylinder => [rect, h + 16.0],
-        S::LinedCylinder => [rect, h + 22.0],
+        // The top rim, the body a box would be, and the bottom rim's bulge.
+        S::Cylinder => [rect, h + 3.0 * rim(rect)],
+        S::LinedCylinder => [rect, h + 3.0 * rim(rect) + LINED],
         S::HCylinder => [w + 24.0, h],
         S::LeanRight | S::LeanLeft | S::TrapBottom | S::TrapTop => [w + h * 0.6, h],
         S::Circle => circle(t, 20.0),
@@ -199,6 +200,14 @@ pub(crate) fn node_size(shape: NodeShape, t: [f32; 2]) -> [f32; 2] {
         S::Text => [t[0] + 12.0, t[1] + 12.0],
     }
 }
+
+/// How deep a cylinder `w` wide draws its rims: half their height, in Mermaid's proportion.
+pub(crate) fn rim(w: f32) -> f32 {
+    w / 2.0 / (2.5 + w / 50.0)
+}
+
+/// How far a lined cylinder's second rim sits below its first.
+const LINED: f32 = 6.0;
 
 fn circle(t: [f32; 2], pad: f32) -> [f32; 2] {
     let d = ((t[0] * t[0] + t[1] * t[1]).sqrt() + pad).max(48.0);
@@ -340,7 +349,7 @@ pub(crate) fn outline(shape: NodeShape, c: [f32; 2], s: [f32; 2]) -> Vec<[f32; 2
         S::TrapBottom => vec![[x0 + h * 0.3, y0], [x1 - h * 0.3, y0], [x1, y1], [x0, y1]],
         S::TrapTop => vec![[x0, y0], [x1, y0], [x1 - h * 0.3, y1], [x0 + h * 0.3, y1]],
         S::Cylinder | S::LinedCylinder => {
-            let (rx, ry) = (s[0] / 2.0, 8.0);
+            let (rx, ry) = (s[0] / 2.0, rim(s[0]));
             let mut pts = arc([c[0], y0 + ry], rx, ry, 180.0, 360.0, 20);
             pts.extend(arc([c[0], y1 - ry], rx, ry, 0.0, 180.0, 20));
             pts
@@ -406,6 +415,11 @@ pub(crate) fn outline(shape: NodeShape, c: [f32; 2], s: [f32; 2]) -> Vec<[f32; 2
 
 /// Draws a node of `shape` at `ctr` with its label, in `fill`, `border` and `text` colours.
 #[allow(clippy::too_many_arguments, reason = "one node's whole drawing")]
+/// A cylinder's open end, a shade off its side so the shape reads even without an outline.
+fn lid(fill: Color, paint: &DiagramStyle) -> Color {
+    super::canvas::over_color(paint.text.alpha(0.06), fill)
+}
+
 pub(crate) fn draw(
     c: &mut Canvas,
     shape: NodeShape,
@@ -477,17 +491,21 @@ pub(crate) fn draw(
                     line(c, vec![[x0 + 8.0, y0], [x0 + 8.0, y1]]);
                     line(c, vec![[x1 - 8.0, y0], [x1 - 8.0, y1]]);
                 }
+                // The top is a filled lid, a shade off the side, so it reads without a heavy rim. The
+                // label sits in the body under it.
                 S::Cylinder => {
-                    line(c, arc([ctr[0], y0 + 8.0], size[0] / 2.0, 8.0, 0.0, 180.0, 20));
-                    at[1] += 4.0;
+                    let ry = rim(size[0]);
+                    c.shape(ellipse([ctr[0], y0 + ry], size[0] / 2.0, ry), lid(fill, paint), border, 1.0);
+                    at[1] += ry / 2.0;
                 }
                 S::LinedCylinder => {
-                    line(c, arc([ctr[0], y0 + 8.0], size[0] / 2.0, 8.0, 0.0, 180.0, 20));
-                    line(c, arc([ctr[0], y0 + 14.0], size[0] / 2.0, 8.0, 0.0, 180.0, 20));
-                    at[1] += 7.0;
+                    let ry = rim(size[0]);
+                    c.shape(ellipse([ctr[0], y0 + ry], size[0] / 2.0, ry), lid(fill, paint), border, 1.0);
+                    line(c, arc([ctr[0], y0 + ry + LINED], size[0] / 2.0, ry, 0.0, 180.0, 24));
+                    at[1] += (ry + LINED) / 2.0;
                 }
                 S::HCylinder => {
-                    line(c, arc([x1 - 8.0, ctr[1]], 8.0, h / 2.0, 90.0, 270.0, 20));
+                    c.shape(ellipse([x1 - 8.0, ctr[1]], 8.0, h / 2.0), lid(fill, paint), border, 1.0);
                     at[0] -= 4.0;
                 }
                 S::DoubleCircle => c.stroke(ellipse(ctr, size[0] / 2.0 - 5.0, size[1] / 2.0 - 5.0), true, 1.0, border),

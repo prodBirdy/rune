@@ -519,8 +519,8 @@ fn a_mermaid_block_draws_a_diagram_or_falls_back_to_its_source() {
         assert!(k.iter().any(|k| k == "source") && !k.iter().any(|k| k == "hint") && !k.iter().any(|k| k == "diagram"), "{bad:?}: {k:?}");
     }
 
-    // Until the fence closes, the source is a code block that grows in place.
-    assert!(matches!(&parse("```mermaid\ngraph TD\nA-->B")[0], Block::Code(_)));
+    // A fence still arriving is a diagram already.
+    assert!(matches!(&parse("```mermaid\ngraph TD\nA-->B")[0], Block::Mermaid(_)));
     assert!(matches!(&parse("```mermaid\ngraph TD\nA-->B\n```")[0], Block::Mermaid(_)));
     assert!(rune_kit::mermaid::supported("sequenceDiagram\nA->>B: hi"));
     assert!(rune_kit::mermaid::render("gantt\n", &MarkdownStyle::neutral(false)).is_none());

@@ -33,6 +33,12 @@ pub(super) struct Win {
     pub(super) quiet: bool,
     /// The last frame presented, while the window rests.
     pub(super) presented: Option<Presented>,
+    /// Until when the window keeps presenting every refresh after a change (`STEADY`).
+    #[cfg(target_os = "windows")]
+    pub(super) steady_until: Option<Instant>,
+    /// Only the steady hold asked for the next frame.
+    #[cfg(target_os = "windows")]
+    pub(super) steady_frame: bool,
 }
 
 impl Win {

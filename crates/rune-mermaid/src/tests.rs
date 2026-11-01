@@ -7,7 +7,7 @@ fn clean_turns_markup_into_text() {
     assert_eq!(clean("#quot;hi#quot; &amp; &lt;3 &apos;ok&apos;"), "\"hi\" & <3 'ok'");
     assert_eq!(clean("`**md**`"), "**md**");
     assert_eq!(clean("# not an entity & also not"), "# not an entity & also not");
-    assert_eq!(clean_quoted(" \"avatar ≈ Abattoir\" "), "avatar ≈ Abattoir");
+    assert_eq!(clean_quoted(" \"capuchin ≈ Cappuccino\" "), "capuchin ≈ Cappuccino");
 }
 
 #[test]

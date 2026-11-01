@@ -46,6 +46,8 @@ pub(crate) struct VirtualList {
     /// The rows the last applied commit mounted. Every measurement of a commit compares with
     /// these, not with the pass before it.
     pub shown: HashSet<String>,
+    /// The rows drawn inside the viewport on the last frame (`Runtime::note_drawn_rows`).
+    pub drawn: Vec<String>,
     /// The row holding the focused element, kept while that row is scrolled out.
     pub focused_row: Option<String>,
     /// The rows holding the text selection's anchor and focus, kept built while scrolled out.
@@ -313,7 +315,6 @@ impl VirtualList {
     /// rows shown last commit), at most [`INDEXED_BUDGET`] of rows not among them mount per
     /// side beyond the viewport.
     pub fn select(&mut self, offset: f32, pinned: bool, budget: Option<&HashSet<String>>) {
-        let total = self.prefix(self.keys.len());
         let offset = if pinned { self.max_offset() } else { offset.min(self.max_offset()) };
         let (start, end) = self.overscan(offset);
         let (mut start, mut end) = {
@@ -348,20 +349,45 @@ impl VirtualList {
                 (start, end)
             }
         };
+        // Rows drawn in the viewport stay while motion still shows them where layout has moved
+        // them out (rows below a fold gliding open), within an overscan of the window.
+        let (mut lo, mut hi) = (start, end);
+        for i in self.drawn.iter().filter_map(|k| self.index_of(k)) {
+            if i < start && self.prefix(start) - self.prefix(i) <= self.viewport * OVERSCAN { lo = lo.min(i); }
+            if i >= end && self.row_end(i + 1) - self.row_end(end) <= self.viewport * OVERSCAN { hi = hi.max(i + 1); }
+        }
+        (start, end) = (lo, hi);
         // A row still at its estimate grows or shrinks once measured; anchoring to it would move
         // the measured rows below, such as the reader's row under a page that just landed.
-        self.anchor = if pinned { None } else {
-            let range = self.visible_range(offset, false);
-            let sums = self.sums();
-            range.into_iter().find(|&i| self.rows[&self.keys[i]].height.is_some())
-                .map(|i| (self.keys[i].clone(), self.pad_top + sums[i]))
-                .or_else(|| self.first_visible(offset, |_| true))
-        };
+        self.anchor = if pinned { None } else { self.anchor_at(offset) };
         if pinned { start = start.min(end.saturating_sub(32)); }
         end = end.max(start);
+        self.place(start..end);
+    }
+
+    /// Keeps the rows mounted now (clamped to the rows), sets the anchor for `offset` as
+    /// [`select`](Self::select) does, and re-derives the space above and below them.
+    pub fn hold(&mut self, offset: f32, pinned: bool) {
+        let offset = if pinned { self.max_offset() } else { offset.min(self.max_offset()) };
+        self.anchor = if pinned { None } else { self.anchor_at(offset) };
+        let len = self.keys.len();
+        self.place(self.range.start.min(len)..self.range.end.min(len));
+    }
+
+    fn place(&mut self, range: Range<usize>) {
+        let total = self.prefix(self.keys.len());
+        let (start, end) = (range.start, range.end.max(range.start));
         self.range = start..end;
         self.before = self.prefix(start);
         self.after = if start < end { total - self.row_end(end) } else { total - self.before };
+    }
+
+    fn anchor_at(&self, offset: f32) -> Option<(String, f32)> {
+        let range = self.visible_range(offset, false);
+        let sums = self.sums();
+        range.into_iter().find(|&i| self.rows[&self.keys[i]].height.is_some())
+            .map(|i| (self.keys[i].clone(), self.pad_top + sums[i]))
+            .or_else(|| self.first_visible(offset, |_| true))
     }
 
     /// The rows within the overscan around `offset`: rows ending at or above its top go, rows

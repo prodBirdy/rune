@@ -26,7 +26,7 @@ pub(super) fn supported(device: &Obj<dyn MTLDevice>) -> bool { device.supportsCo
 
 impl QuerySet {
     pub(super) fn new(device: &Obj<dyn MTLDevice>, desc: &wgpu::QuerySetDescriptor<'_>) -> Self {
-        assert!(matches!(desc.ty, wgpu::QueryType::Timestamp), "RUNE_GPU_BACKEND=metal: {:?} queries", desc.ty);
+        if !matches!(desc.ty, wgpu::QueryType::Timestamp) { super::unsupported!("{:?} queries", desc.ty) }
         let d = MTLCounterSampleBufferDescriptor::new();
         d.setStorageMode(MTLStorageMode::Shared);
         // SAFETY: wgpu limits a query set to 4096 queries, within Metal's sample buffer size.
