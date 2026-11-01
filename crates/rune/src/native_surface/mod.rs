@@ -7,6 +7,8 @@
 mod gpu_tests;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(target_os = "windows")]
 pub mod win32;
 mod pipeline;
@@ -62,6 +64,8 @@ pub(crate) enum Source {
     PixelBuffer(macos::PixelBuffer),
     #[cfg(target_os = "windows")]
     Shared(win32::SharedTexture),
+    #[cfg(target_os = "linux")]
+    DmaBuf(linux::DmaBuf),
 }
 pub(crate) struct Frame {
     pub id: u64,
@@ -272,6 +276,13 @@ impl NativeSurface {
     pub fn push(&self, texture: win32::SharedTexture, frame_id: u64) -> Result<(), String> {
         let (size, format, color) = texture.info()?;
         self.replace(Frame { id: frame_id, source: Source::Shared(texture), size, format, color, orient: Orient::UP });
+        Ok(())
+    }
+    /// A frame in a dmabuf: latest-wins like `push_bytes`, imported without a copy.
+    #[cfg(target_os = "linux")]
+    pub fn push(&self, buffer: linux::DmaBuf, frame_id: u64) -> Result<(), String> {
+        let (size, format, color) = buffer.info();
+        self.replace(Frame { id: frame_id, source: Source::DmaBuf(buffer), size, format, color, orient: Orient::UP });
         Ok(())
     }
     fn replace(&self, frame: Frame) {
