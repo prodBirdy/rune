@@ -82,6 +82,8 @@ pub struct SurfaceRenderer {
     importer: Option<macos::Importer>,
     #[cfg(target_os = "windows")]
     importer: Option<win32::Importer>,
+    #[cfg(target_os = "linux")]
+    importer: Option<linux::Importer>,
 }
 impl SurfaceRenderer {
     #[cfg(target_arch = "wasm32")]
@@ -169,6 +171,8 @@ impl SurfaceRenderer {
             #[cfg(target_os = "macos")]
             importer: None,
             #[cfg(target_os = "windows")]
+            importer: None,
+            #[cfg(target_os = "linux")]
             importer: None,
         }
     }
@@ -355,7 +359,7 @@ impl SurfaceRenderer {
         if let Some(i) = &self.importer {
             i.flush();
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         if let Some(i) = &mut self.importer {
             i.flush();
         }
@@ -405,6 +409,13 @@ impl SurfaceRenderer {
                 let (textures, r) = self.importer.as_mut().unwrap().import(t, frame.id)?;
                 release = r;
                 textures
+            }
+            #[cfg(target_os = "linux")]
+            Source::DmaBuf(b) => {
+                if self.importer.is_none() {
+                    self.importer = Some(linux::Importer::new(device)?);
+                }
+                self.importer.as_mut().unwrap().import(b)?
             }
         };
         Ok(Imported {

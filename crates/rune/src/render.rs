@@ -421,6 +421,9 @@ impl Gpu {
     #[cfg(not(target_arch = "wasm32"))]
     fn device_on(adapter: &wgpu::Adapter, wanted: wgpu::Features) -> Result<(wgpu::Device, wgpu::Queue), String> {
         let optional_features = wgpu::Features::TIMESTAMP_QUERY | wanted;
+        // NativeSurface's dmabuf import (native_surface/linux.rs).
+        #[cfg(target_os = "linux")]
+        let optional_features = optional_features | wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF;
         #[cfg(target_os = "macos")]
         let optional_features = optional_features | wgpu::Features::PASSTHROUGH_SHADERS;
         let required_features = adapter.features() & optional_features;
